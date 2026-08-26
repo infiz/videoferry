@@ -1,0 +1,51 @@
+[package]
+name = "videoferry-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+autobins = false
+build = "build.rs"
+default-run = "videoferry"
+
+[lib]
+name = "videoferry_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "videoferry"
+path = "src/slint_main.rs"
+
+[[bin]]
+name = "videoferry-egui"
+path = "src/egui_main.rs"
+
+[features]
+default = []
+native-ffmpeg = ["videoferry-ffmpeg/native-ffmpeg"]
+
+[dependencies]
+eframe.workspace = true
+videoferry-core.workspace = true
+videoferry-ffmpeg.workspace = true
+videoferry-presets.workspace = true
+jiff.workspace = true
+keepawake.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+slint-build.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSString"] }
+
+[lints]
+workspace = true

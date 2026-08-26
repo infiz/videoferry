@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/app",
+    "crates/converter-core",
+    "crates/ffmpeg-bridge",
+    "crates/presets",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+repository = "https://github.com/infiz/videoferry"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+embed-resource = "=3.0.11"
+eframe = { version = "=0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "filter", "format", "software-resampling", "software-scaling"] }
+videoferry-core = { path = "crates/converter-core" }
+videoferry-ffmpeg = { path = "crates/ffmpeg-bridge" }
+videoferry-presets = { path = "crates/presets" }
+jiff = "=0.2.35"
+keepawake = "=0.6.1"
+rfd = { version = "=0.17.2", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
+slint = { version = "=1.17.1", default-features = false, features = ["accessibility", "backend-winit", "compat-1-2", "renderer-femtovg", "renderer-software", "std", "unstable-winit-030"] }
+slint-build = "=1.17.1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

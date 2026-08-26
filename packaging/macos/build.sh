@@ -205,18 +205,104 @@ rm -f "$archive"
 ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$archive"
 
 dmg_root="$dist_root/dmg-root"
+dmg_read_write="$dist_root/VideoFerry-$app_version-macos-aarch64-read-write.dmg"
 dmg="$dist_root/VideoFerry-$app_version-macos-aarch64.dmg"
-case "$dmg_root" in
-    "$workspace_root"/dist/macos/*) ;;
-    *) echo "Refusing to replace an unexpected path: $dmg_root" >&2; exit 1 ;;
-esac
+dmg_background="$script_dir/dmg-background.png"
+dmg_volume_name="VideoFerry Installer"
+for temporary_path in "$dmg_root" "$dmg_read_write"; do
+    case "$temporary_path" in
+        "$workspace_root"/dist/macos/*) ;;
+        *) echo "Refusing to replace an unexpected path: $temporary_path" >&2; exit 1 ;;
+    esac
+done
+if [[ ! -f "$dmg_background" ]]; then
+    echo "The DMG background is missing: $dmg_background" >&2
+    exit 1
+fi
+
+dmg_device=""
+dmg_mount=""
+dmg_mounted=0
+cleanup_dmg_build() {
+    if [[ "$dmg_mounted" == "1" ]]; then
+        hdiutil detach "$dmg_device" -quiet || true
+    fi
+    rm -rf "$dmg_root"
+    rm -f "$dmg_read_write"
+}
+trap cleanup_dmg_build EXIT
+
 rm -rf "$dmg_root"
-mkdir -p "$dmg_root"
+rm -f "$dmg" "$dmg_read_write"
+mkdir -p "$dmg_root/.background"
 cp -R "$app_bundle" "$dmg_root/"
+cp "$dmg_background" "$dmg_root/.background/dmg-background.png"
 ln -s /Applications "$dmg_root/Applications"
-rm -f "$dmg"
-hdiutil create -volname "VideoFerry" -srcfolder "$dmg_root" -ov -format UDZO "$dmg"
-rm -rf "$dmg_root"
+
+# Build a writable image first so Finder can persist the custom icon layout.
+hdiutil create \
+    -volname "$dmg_volume_name" \
+    -srcfolder "$dmg_root" \
+    -ov \
+    -format UDRW \
+    "$dmg_read_write" >/dev/null
+attach_output="$(hdiutil attach \
+    "$dmg_read_write" \
+    -readwrite \
+    -noverify \
+    -noautoopen)"
+dmg_device="$(awk '/^\/dev\// { print $1; exit }' <<<"$attach_output")"
+dmg_mount="$(awk -F $'\t' '$NF ~ /^\// { mount = $NF } END { print mount }' <<<"$attach_output")"
+if [[ -z "$dmg_device" || -z "$dmg_mount" || ! -d "$dmg_mount" ]]; then
+    echo "Unable to determine the device or mount point for the writable DMG." >&2
+    exit 1
+fi
+dmg_mounted=1
+
+mounted_volume_name="$(basename "$dmg_mount")"
+osascript - "$mounted_volume_name" <<'APPLESCRIPT'
+on run argv
+    set volumeName to item 1 of argv
+    tell application "Finder"
+        set dmgDisk to disk volumeName
+        open dmgDisk
+        set dmgWindow to container window of dmgDisk
+        set current view of dmgWindow to icon view
+        set toolbar visible of dmgWindow to false
+        set statusbar visible of dmgWindow to false
+        set bounds of dmgWindow to {100, 100, 760, 500}
+
+        set iconOptions to icon view options of dmgWindow
+        set arrangement of iconOptions to not arranged
+        set icon size of iconOptions to 112
+        set text size of iconOptions to 13
+        set background picture of iconOptions to file ".background:dmg-background.png" of dmgDisk
+
+        set position of item "VideoFerry.app" of dmgDisk to {150, 190}
+        set position of item "Applications" of dmgDisk to {510, 190}
+        update dmgDisk without registering applications
+        delay 2
+        close dmgWindow
+        open dmgDisk
+        delay 2
+    end tell
+end run
+APPLESCRIPT
+
+sync
+hdiutil detach "$dmg_device" -quiet
+dmg_mounted=0
+hdiutil convert \
+    "$dmg_read_write" \
+    -format UDZO \
+    -imagekey zlib-level=9 \
+    -o "$dmg" >/dev/null
+if [[ ! -f "$dmg" ]]; then
+    echo "DMG conversion did not produce the expected installation image: $dmg" >&2
+    exit 1
+fi
+cleanup_dmg_build
+trap - EXIT
 
 if [[ "$signing_identity" != "-" ]]; then
     codesign "${signing_arguments[@]}" "$dmg"

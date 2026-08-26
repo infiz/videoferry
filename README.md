@@ -72,10 +72,19 @@ the default sibling checkout location.
 
 ## Packaging
 
-Windows release builds use `packaging/windows/build.ps1`. macOS Apple Silicon
-release builds use `packaging/macos/build.sh`. Both package the pinned FFmpeg
-shared libraries with VideoFerry and verify the native runtime before creating
-release artifacts.
+Build the macOS Apple Silicon application, portable ZIP, and installable DMG
+from the repository root:
+
+```bash
+./scripts/build_mac.sh
+```
+
+The entry point builds the pinned FFmpeg SDK on first use and then runs the
+verified macOS package build. The DMG opens with VideoFerry on the left and an
+Applications shortcut on the right for standard drag-to-install setup. Windows
+release builds use `packaging/windows/build.ps1`. Both platforms package the
+pinned FFmpeg shared libraries with VideoFerry and verify the native runtime
+before creating release artifacts.
 
 ## Contributing
 

@@ -6,10 +6,13 @@ Thank you for helping improve VideoFerry.
 
 1. Keep changes focused and avoid committing generated media, SDKs, or build
    output.
-2. Run `cargo fmt --all --check`.
-3. Run `cargo clippy --workspace --all-targets -- -D warnings`.
-4. Run `cargo test --workspace --locked`.
-5. For native conversion changes, describe the sample input and expected
+2. Install the repository hooks once with `pre-commit install`.
+3. Run `pre-commit run --all-files` before committing. This checks Rust
+   formatting and runs Clippy with warnings treated as errors.
+4. If `pre-commit` is unavailable, run `cargo fmt --all -- --check` and
+   `cargo clippy --workspace --all-targets --locked -- -D warnings` directly.
+5. Run `cargo test --workspace --locked`.
+6. For native conversion changes, describe the sample input and expected
    output and run the relevant platform parity checks when possible.
 
 Unsafe Rust belongs only in `crates/ffmpeg-bridge`. Other crates should remain

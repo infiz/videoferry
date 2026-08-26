@@ -43,6 +43,16 @@ cargo test --workspace --locked
 cargo run -p videoferry-app
 ```
 
+Install the repository's Git checks once, then run them against the full tree:
+
+```text
+pre-commit install
+pre-commit run --all-files
+```
+
+The hooks run `cargo fmt` and strict Clippy checks whenever relevant Rust or
+workspace configuration files are committed.
+
 Native FFmpeg builds require `FFMPEG_DIR` to point to a compatible shared
 FFmpeg SDK and `LIBCLANG_PATH` to point to libclang:
 

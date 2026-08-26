@@ -1,0 +1,9 @@
+/target/
+/.local/
+/dist/
+*.pdb
+*.dSYM/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp

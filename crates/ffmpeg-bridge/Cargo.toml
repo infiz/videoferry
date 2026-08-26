@@ -1,0 +1,32 @@
+[package]
+name = "videoferry-ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = []
+native-ffmpeg = ["dep:ffmpeg-next"]
+test-fault-injection = ["native-ffmpeg"]
+
+[dependencies]
+ffmpeg-next = { workspace = true, optional = true }
+videoferry-core.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+videoferry-presets.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "native_convert"
+required-features = ["native-ffmpeg"]
+
+[[example]]
+name = "native_thumbnail"
+required-features = ["native-ffmpeg"]

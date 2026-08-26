@@ -1,0 +1,30 @@
+schema_version = 1
+ffmpeg_version = "9.0.1"
+ffmpeg_source_commit = "bf1b838f2a"
+binding_crate = "ffmpeg-next"
+binding_version = "9.0.0"
+license = "GPL-3.0-or-later"
+
+[libraries]
+avcodec = "63.1.101"
+avfilter = "12.1.101"
+avformat = "63.1.101"
+avutil = "61.1.101"
+
+[windows_x86_64]
+status = "checksum-installer-static-crt-minimal-runtime-and-portable-smoke-verified"
+distribution = "Gyan release full shared"
+archive = "ffmpeg-9.0.1-full_build-shared.7z"
+url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-full_build-shared.7z"
+sha256 = "cb4d5e8db6a3353bffdb2100d3eb4b76733457fa443215e236f57c99f9ffdca4"
+runtime_directory = ".local/ffmpeg/ffmpeg-9.0.1-full_build-shared"
+
+[macos_aarch64]
+status = "pinned-source-recipe-and-package-verifier-added-native-runtime-pending"
+distribution = "VideoFerry signed shared-library bundle"
+archive = "ffmpeg-9.0.1.tar.xz"
+url = "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz"
+sha256 = "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+runtime_directory = ".local/ffmpeg/macos-aarch64"
+build_recipe = "packaging/macos/build-ffmpeg-sdk.sh"
+homebrew_build_dependencies = ["pkgconf", "nasm", "x264", "x265", "svt-av1", "vid.stab"]

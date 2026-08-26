@@ -1,0 +1,1875 @@
+import { ComboBox, LineEdit, ListView, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
+import "../assets/fonts/NotoSansCJKsc-Regular.otf";
+
+export struct TaskItem {
+    title: string,
+    subtitle: string,
+    status: string,
+    completed-before: float,
+    completed-this-run: float,
+    has-progress: bool,
+    progress-label: string,
+    progress-summary: string,
+    completed-before-label: string,
+    completed-this-run-label: string,
+    remaining-label: string,
+    selected: bool,
+    active: bool,
+    can-run: bool,
+    can-retry: bool,
+    can-reorder: bool,
+}
+
+export struct HistoryItem {
+    title: string,
+    subtitle: string,
+    detail: string,
+    configuration: string,
+}
+
+global HoverState {
+    in-out property <string> text: "";
+    in-out property <bool> visible: false;
+}
+
+component SoftButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> show-icon: false;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    in property <string> accessible-name: text;
+    callback clicked;
+
+    height: 40px;
+    min-width: 92px;
+    horizontal-stretch: 0;
+    border-radius: 20px;
+    background: !root.enabled ? #27272d
+        : root.primary ? (touch.pressed ? #c90d18 : touch.has-hover ? #fa2330 : #e50914)
+        : touch.pressed ? #35353d : touch.has-hover ? #2a2a31 : #202026;
+    border-width: focus.has-focus ? 2px : root.primary ? 0px : 1px;
+    border-color: focus.has-focus ? #ffffff : #3a3a43;
+    animate background { duration: 120ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: focus;
+
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: root.show-icon ? 8px : 0px;
+        alignment: center;
+        if root.show-icon: Rectangle {
+            width: 18px;
+            height: root.height;
+            horizontal-stretch: 0;
+            vertical-stretch: 0;
+            background: transparent;
+
+            Image {
+                source: root.icon;
+                width: 18px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+                opacity: root.enabled ? 1 : 0.45;
+            }
+        }
+        button-label-slot := Rectangle {
+            width: button-label.preferred-width;
+            height: root.height;
+            horizontal-stretch: 0;
+            vertical-stretch: 0;
+            background: transparent;
+
+            button-label := Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.text;
+                color: root.enabled ? #f8f8fa : #777780;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : not-allowed;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: text;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 42px;
+    min-width: 72px;
+    horizontal-stretch: 0;
+    background: focus.has-focus ? #292930 : transparent;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: focus;
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? #66666f : root.selected ? #ffffff : touch.has-hover ? #e7e7eb : #9a9aa4;
+        font-size: 14px;
+        font-weight: root.selected ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        x: 12px;
+        y: parent.height - 3px;
+        width: parent.width - 24px;
+        height: root.selected ? 3px : 0px;
+        border-radius: 2px;
+        background: #e50914;
+        animate height { duration: 120ms; easing: ease-out; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : not-allowed;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component HoverText inherits Rectangle {
+    in property <string> text;
+    in property <brush> text-color: #ffffff;
+    in property <length> font-size: 14px;
+    in property <int> font-weight: 400;
+    property <bool> hovering: hover.has-hover;
+    property <bool> truncated: label.preferred-width > label.width;
+    property <bool> show-full-text: root.hovering && root.truncated && root.text != "";
+
+    height: root.font-size + 7px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    background: transparent;
+    label := Text {
+        x: 12px;
+        width: max(0px, parent.width - 24px);
+        height: parent.height;
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        overflow: elide;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+    }
+    hover := TouchArea { mouse-cursor: default; }
+    changed show-full-text => {
+        if (root.show-full-text) {
+            HoverState.text = root.text;
+            HoverState.visible = true;
+        } else if (HoverState.text == root.text) {
+            HoverState.visible = false;
+        }
+    }
+}
+
+component LiveMetric inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+
+    height: 24px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    border-radius: 7px;
+    background: #18181d;
+    border-width: 1px;
+    border-color: #303038;
+    accessible-role: text;
+    accessible-label: root.label + ": " + root.value;
+
+    HoverText {
+        y: (parent.height - self.height) / 2;
+        width: parent.width;
+        horizontal-stretch: 0;
+        text: root.label + ":  " + root.value;
+        text-color: #b8b8c0;
+        font-size: 10px;
+        font-weight: 600;
+    }
+}
+
+component TaskTargetRow inherits Rectangle {
+    in property <string> path;
+    in property <int> item-index;
+    in property <bool> selected: false;
+    callback clicked;
+
+    height: 48px;
+    horizontal-stretch: 1;
+    border-radius: 10px;
+    background: root.selected ? #2b1a1f : touch.has-hover ? #222228 : #1b1b20;
+    border-width: 1px;
+    border-color: focus.has-focus ? #ffffff : root.selected ? #8c2933 : #2c2c33;
+    accessible-role: list-item;
+    accessible-label: root.path;
+    accessible-item-index: root.item-index;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 10px;
+        Text {
+            text: root.selected ? "●" : "○";
+            color: root.selected ? #ff6670 : #55555e;
+            font-size: 11px;
+            width: 14px;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+        }
+        path-slot := Rectangle {
+            min-width: 0px;
+            preferred-width: 0px;
+            horizontal-stretch: 1;
+            background: transparent;
+            clip: true;
+            HoverText {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                horizontal-stretch: 0;
+                text: root.path;
+                text-color: root.selected ? #ffffff : #b6b6be;
+                font-size: 12px;
+            }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component NavButton inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: text;
+    in property <bool> selected: false;
+    callback clicked;
+
+    height: 38px;
+    min-width: 86px;
+    max-width: 104px;
+    horizontal-stretch: 0;
+    border-radius: 10px;
+    background: root.selected ? #24242a : touch.has-hover ? #1c1c21 : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: #ffffff;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    animate background { duration: 120ms; easing: ease-out; }
+
+    Text {
+        text: root.text;
+        color: root.selected ? #ffffff : touch.has-hover ? #e8e8ec : #96969f;
+        font-size: 14px;
+        font-weight: root.selected ? 650 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ModeChip inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 38px;
+    min-width: 108px;
+    border-radius: 19px;
+    border-width: 1px;
+    border-color: !root.enabled ? #2d2d34 : focus.has-focus ? #ffffff : root.selected ? #e50914 : #3a3a42;
+    background: !root.enabled ? #19191e : root.selected ? #321116 : touch.has-hover ? #24242b : #19191e;
+    // Slint 1.17 exposes custom radio-button roles as non-focusable on Windows.
+    // A checkable button keeps the segmented-chip appearance and keyboard path.
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: focus;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? #66666f : root.selected ? #ffb7bc : #c4c4cb;
+        font-size: 13px;
+        font-weight: root.selected ? 650 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : not-allowed;
+        clicked => { root.clicked(); }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component TaskCard inherits Rectangle {
+    in property <TaskItem> task;
+    in property <int> item-index;
+    in property <bool> queue-running: false;
+    in property <int> task-count;
+    in property <bool> dragging: false;
+    in property <bool> drop-target: false;
+    callback selected(int);
+    callback retry(int);
+    callback drag-started(int);
+    callback drag-hovered(int);
+    callback drag-finished(int, int);
+    callback drag-cancelled;
+    property <bool> drag-active: false;
+    property <bool> was-dragged: false;
+    property <int> drag-target-index: root.item-index;
+
+    height: 124px;
+    horizontal-stretch: 1;
+    border-radius: 16px;
+    background: root.dragging ? #292930 : task.selected ? #24242b : touch.has-hover ? #1f1f25 : #19191e;
+    border-width: 1px;
+    border-color: root.dragging || root.drop-target ? #ff5963 : focus.has-focus ? #ffffff : task.active ? #e50914 : task.selected ? #4b4b56 : #2b2b32;
+    drop-shadow-blur: root.dragging ? 24px : touch.has-hover ? 18px : 8px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 5px;
+    accessible-role: list-item;
+    accessible-label: task.title + ", " + task.status + (task.can-reorder ? ", draggable" : "");
+    accessible-item-selected: task.selected;
+    accessible-item-index: item-index;
+    accessible-action-default => { root.selected(item-index); }
+    forward-focus: focus;
+    animate background, border-color { duration: 140ms; easing: ease-out; }
+
+    if root.drop-target && !root.dragging: Rectangle {
+        y: -4px;
+        width: parent.width;
+        height: 3px;
+        border-radius: 2px;
+        background: #ff5963;
+    }
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+
+        cover := Rectangle {
+            width: 64px;
+            height: 64px;
+            horizontal-stretch: 0;
+            border-radius: 12px;
+            background: task.active
+                ? @linear-gradient(145deg, #e50914 0%, #7b1020 60%, #25141a 100%)
+                : @linear-gradient(145deg, #3c3c48 0%, #222229 62%, #17171c 100%);
+            Text {
+                text: "▶";
+                color: #ffffff;
+                font-size: 23px;
+                font-weight: 800;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                visible: task.active;
+            }
+            Image {
+                source: @image-url("../assets/task-video.svg");
+                width: 30px;
+                height: 30px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+                opacity: 0.5;
+                visible: !task.active;
+            }
+            if task.can-reorder && !task.active: Text {
+                x: 5px;
+                width: 14px;
+                text: "⋮";
+                color: #8d8d98;
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        task-copy-slot := Rectangle {
+            width: max(0px, root.width - 244px);
+            horizontal-stretch: 0;
+            background: transparent;
+            clip: true;
+            HoverText {
+                y: 2px;
+                width: parent.width;
+                horizontal-stretch: 0;
+                text: task.title;
+                text-color: #f6f6f8;
+                font-size: 15px;
+                font-weight: 650;
+            }
+            HoverText {
+                y: 27px;
+                width: parent.width;
+                horizontal-stretch: 0;
+                text: task.subtitle;
+                text-color: #92929c;
+                font-size: 11px;
+            }
+            HorizontalLayout {
+                y: 44px;
+                width: parent.width;
+                height: 16px;
+                Text {
+                    text: "Overall progress";
+                    color: #aaaab5;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: task.progress-label;
+                    color: #f0f0f4;
+                    font-size: 11px;
+                    font-weight: 700;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+            progress-track := Rectangle {
+                y: 64px;
+                width: parent.width;
+                height: task.has-progress ? 12px : 0px;
+                border-radius: 6px;
+                background: #697bd0;
+                border-width: 1px;
+                border-color: #5a5a67;
+                clip: true;
+                accessible-role: progress-indicator;
+                accessible-label: "Task progress: " + task.progress-summary;
+                accessible-value-minimum: 0;
+                accessible-value-maximum: 100;
+                accessible-value: round((task.completed-before + task.completed-this-run) * 100) + "%";
+                Rectangle {
+                    x: progress-track.width * task.completed-before;
+                    width: progress-track.width * task.completed-this-run;
+                    height: parent.height;
+                    background: #ed3345;
+                    animate x, width { duration: 180ms; easing: ease-out; }
+                }
+                Rectangle {
+                    x: progress-track.width * (task.completed-before + task.completed-this-run);
+                    width: progress-track.width * max(0, 1 - task.completed-before - task.completed-this-run);
+                    height: parent.height;
+                    background: #3d3d48;
+                    animate x, width { duration: 180ms; easing: ease-out; }
+                }
+            }
+            HorizontalLayout {
+                y: 81px;
+                width: parent.width;
+                height: 16px;
+                spacing: 12px;
+                Text {
+                    text: "■  " + task.completed-before-label;
+                    color: #8999e5;
+                    font-size: 11px;
+                    font-weight: 650;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "■  " + task.completed-this-run-label;
+                    color: #ff6573;
+                    font-size: 11px;
+                    font-weight: 650;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "■  " + task.remaining-label;
+                    color: #aaaab5;
+                    font-size: 11px;
+                    font-weight: 650;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 132px;
+            horizontal-stretch: 0;
+            alignment: center;
+            Text {
+                text: task.status;
+                color: task.status == "Converting" ? #ff6f78
+                    : task.status == "Finished" ? #72dca0
+                    : task.status == "Needs attention" || task.status == "Finished with issues" ? #ffbd69
+                    : #aaaab4;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-stretch: 0;
+            }
+            if task.can-retry: SoftButton {
+                text: "Retry task";
+                accessible-name: "Retry task";
+                enabled: !task.active && !root.queue-running;
+                height: 34px;
+                min-width: 106px;
+                clicked => { root.retry(item-index); }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        width: root.width - 156px;
+        mouse-cursor: pointer;
+        clicked => { if (!root.was-dragged) { root.selected(item-index); } }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.was-dragged = false;
+                root.drag-target-index = root.item-index;
+            } else if (event.kind == PointerEventKind.move && self.pressed && task.can-reorder) {
+                let distance = self.mouse-y - self.pressed-y;
+                if (abs(distance) > 8px) {
+                    if (!root.drag-active) {
+                        root.drag-active = true;
+                        root.drag-started(root.item-index);
+                    }
+                    let row-offset = round(distance / 120px);
+                    root.drag-target-index = max(0, min(root.task-count - 1, root.item-index + row-offset));
+                    root.drag-hovered(root.drag-target-index);
+                }
+            } else if (event.kind == PointerEventKind.up) {
+                if (root.drag-active) {
+                    root.was-dragged = true;
+                    root.drag-finished(root.item-index, root.drag-target-index);
+                    root.drag-active = false;
+                }
+            } else if (event.kind == PointerEventKind.cancel) {
+                if (root.drag-active) {
+                    root.drag-cancelled();
+                    root.drag-active = false;
+                }
+            }
+        }
+    }
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.selected(item-index);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component HistoryCard inherits Rectangle {
+    in property <HistoryItem> item;
+    height: 118px;
+    horizontal-stretch: 1;
+    border-radius: 14px;
+    background: #19191e;
+    border-width: 1px;
+    border-color: #292930;
+    accessible-role: list-item;
+    accessible-label: item.title + ", " + item.subtitle;
+
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 14px;
+        Rectangle {
+            width: 52px;
+            height: 52px;
+            horizontal-stretch: 0;
+            border-radius: 10px;
+            background: #203128;
+            Text {
+                text: "✓";
+                color: #72dca0;
+                font-size: 23px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        history-copy-slot := Rectangle {
+            width: max(0px, root.width - 98px);
+            horizontal-stretch: 0;
+            background: transparent;
+            clip: true;
+            HoverText {
+                y: 1px;
+                width: parent.width;
+                horizontal-stretch: 0;
+                text: item.title;
+                text-color: #f2f2f5;
+                font-size: 15px;
+                font-weight: 650;
+            }
+            HoverText { y: 25px; width: parent.width; horizontal-stretch: 0; text: item.subtitle; text-color: #9999a3; font-size: 12px; }
+            HoverText { y: 46px; width: parent.width; horizontal-stretch: 0; text: item.detail; text-color: #74747e; font-size: 11px; }
+            HoverText { y: 67px; width: parent.width; horizontal-stretch: 0; text: item.configuration; text-color: #a9a9b2; font-size: 11px; font-weight: 600; }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "VideoFerry";
+    icon: @image-url("../assets/app-icon.png");
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 900px;
+    min-height: 620px;
+    background: #0d0d10;
+    default-font-family: "Noto Sans CJK SC";
+    default-font-size: 14px;
+
+    in property <[TaskItem]> tasks;
+    in property <[HistoryItem]> history;
+    in property <string> app-version;
+    in property <[string]> mode-labels;
+    in property <[string]> encoder-labels;
+    in property <int> mode-index;
+    in property <int> encoder-index;
+    in property <bool> show-encoder: true;
+    in property <[string]> fps-labels;
+    in property <int> fps-index;
+    in property <bool> show-fps: true;
+    in property <float> explicit-fps: 30;
+    in property <bool> show-explicit-fps: false;
+    in property <float> quality: 28;
+    in property <bool> show-quality: true;
+    in property <string> speed: "medium";
+    in property <bool> show-speed: true;
+    in property <bool> prevent-sleep: true;
+    in property <string> trim-start: "00:00";
+    in property <string> trim-end: "00:01";
+    in property <bool> apply-lut: true;
+    in property <int> stabilize-index: 1;
+    in property <float> slideshow-interval: 3;
+    in property <int> slideshow-fps: 30;
+    in property <int> slideshow-resolution-index: 0;
+    in property <bool> slideshow-collage: false;
+    in property <[string]> slideshow-audio-labels;
+    in property <int> slideshow-audio-selected: -1;
+    in property <string> activity: "Ready";
+    in property <string> engine-status: "Starting the video engine…";
+    in property <string> active-title: "Ready when you are";
+    in property <string> active-detail: "Add a few videos and make them feel at home.";
+    in property <string> live-position: "-";
+    in property <string> live-duration: "-";
+    in property <string> live-frames: "-";
+    in property <string> live-conversion-fps: "-";
+    in property <string> live-conversion-speed: "-";
+    in property <string> live-original-fps: "-";
+    in property <string> live-target-fps: "-";
+    in property <string> live-encoder: "-";
+    in property <string> live-quality: "-";
+    in property <string> live-preset: "-";
+    in property <string> live-carried-audio: "-";
+    in property <string> live-carried-subtitles: "-";
+    in property <string> live-spent: "-";
+    in property <string> live-estimated-total: "-";
+    in property <string> live-remaining: "-";
+    in property <float> progress: 0;
+    in property <bool> is-running: false;
+    in property <bool> is-paused: false;
+    in property <bool> selected-can-move: false;
+    in property <bool> preview-enabled: false;
+    in property <bool> has-live-preview: false;
+    in property <image> live-preview;
+    in property <int> pending-count: 0;
+    in property <int> completed-count: 0;
+    in property <[string]> task-draft-targets;
+    in property <string> task-draft-summary;
+    in-out property <int> selected-index: -1;
+    in-out property <int> page: 0;
+    in-out property <bool> settings-open: false;
+    in-out property <bool> task-builder-open: false;
+    in-out property <int> task-builder-step: 0;
+    in-out property <string> task-name: "";
+    in-out property <int> task-target-selected: -1;
+    in-out property <bool> task-drop-active: false;
+    in-out property <int> drag-task-index: -1;
+    in-out property <int> drag-target-index: -1;
+    property <bool> settings-editable: root.task-builder-open || !root.is-running;
+
+    callback begin-task;
+    callback prepare-task() -> bool;
+    callback cancel-task;
+    callback add-task-files;
+    callback add-task-folder;
+    callback move-task-target(int, int) -> int;
+    callback remove-task-target(int) -> bool;
+    callback create-task(string) -> bool;
+    callback start-queue;
+    callback select-task(int);
+    callback retry-task(int);
+    callback move-selected(int);
+    callback reorder-task(int, int);
+    callback remove-selected;
+    callback clear-queue;
+    callback clear-history;
+    callback toggle-pause;
+    callback set-live-preview(bool);
+    callback pause-after-current;
+    callback stop-current;
+    callback stop-all;
+    callback set-mode(int);
+    callback set-encoder(int);
+    callback set-fps-mode(int);
+    callback set-explicit-fps(float);
+    callback set-quality(float);
+    callback cycle-speed;
+    callback set-prevent-sleep(bool);
+    callback set-trim-start(string);
+    callback set-trim-end(string);
+    callback set-apply-lut(bool);
+    callback set-stabilize-strength(int);
+    callback set-slideshow-interval(float);
+    callback set-slideshow-fps(int);
+    callback set-slideshow-resolution(int);
+    callback set-slideshow-collage(bool);
+    callback add-slideshow-audio;
+    callback select-slideshow-audio(int);
+    callback move-slideshow-audio(int);
+    callback remove-slideshow-audio;
+    callback clear-slideshow-audio;
+    callback open-product-page;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Compact consumer-app navigation. The native title bar already carries
+        // the full product name, so this row uses the mark without repeating it.
+        header := Rectangle {
+            height: 64px;
+            vertical-stretch: 0;
+            background: #111114;
+            border-width: 0px;
+            accessible-role: banner;
+
+            HorizontalLayout {
+                padding-left: 26px;
+                padding-right: 26px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 12px;
+
+                Rectangle {
+                    width: 38px;
+                    height: 38px;
+                    horizontal-stretch: 0;
+                    border-radius: 12px;
+                    background: @linear-gradient(145deg, #ff2430 0%, #c90714 100%);
+                    Image {
+                        source: @image-url("../assets/app-icon.png");
+                        width: parent.width;
+                        height: parent.height;
+                        image-fit: contain;
+                    }
+                }
+                Rectangle {
+                    width: 1px;
+                    height: 26px;
+                    horizontal-stretch: 0;
+                    background: #303037;
+                }
+                Text {
+                    text: "v" + root.app-version;
+                    color: #777781;
+                    font-size: 11px;
+                    font-weight: 600;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                }
+                NavButton {
+                    text: "My queue";
+                    accessible-name: "Conversion queue";
+                    selected: root.page == 0;
+                    clicked => { root.page = 0; }
+                }
+                NavButton {
+                    text: "Finished";
+                    accessible-name: "Completed history, " + root.history.length + " items";
+                    selected: root.page == 1;
+                    clicked => { root.page = 1; }
+                }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                SoftButton {
+                    text: "Product page";
+                    accessible-name: "Open VideoFerry product page, apps.infiz.com/videoferry";
+                    min-width: 126px;
+                    max-width: 126px;
+                    clicked => { root.open-product-page(); }
+                }
+                SoftButton {
+                    text: "New task";
+                    icon: @image-url("../assets/add.svg");
+                    show-icon: true;
+                    accessible-name: "New task";
+                    primary: true;
+                    min-width: 118px;
+                    max-width: 118px;
+                    clicked => {
+                        root.begin-task();
+                        root.task-name = "";
+                        root.task-target-selected = -1;
+                        root.task-builder-step = 0;
+                        root.task-builder-open = true;
+                    }
+                }
+                SoftButton {
+                    text: "Settings";
+                    accessible-name: "Conversion settings";
+                    min-width: 102px;
+                    max-width: 102px;
+                    clicked => { root.settings-open = true; }
+                }
+            }
+        }
+
+        content := Rectangle {
+            vertical-stretch: 1;
+            background: @linear-gradient(155deg, #251217 0%, #111115 38%, #0d0d10 100%);
+            accessible-role: main;
+
+            if root.page == 0: VerticalLayout {
+                padding-left: 34px;
+                padding-right: 34px;
+                padding-top: 26px;
+                padding-bottom: root.is-running ? 130px : 28px;
+                spacing: 20px;
+
+                if root.tasks.length == 0: Rectangle {
+                    vertical-stretch: 1;
+                    background: transparent;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 16px;
+                        HorizontalLayout {
+                            height: 86px;
+                            vertical-stretch: 0;
+                            alignment: center;
+                            Rectangle {
+                                width: 86px;
+                                height: 86px;
+                                horizontal-stretch: 0;
+                                border-radius: 43px;
+                                background: #271419;
+                                border-width: 1px;
+                                border-color: #5d2028;
+                                Image {
+                                    source: @image-url("../assets/task-video.svg");
+                                    width: 38px;
+                                    height: 38px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    image-fit: contain;
+                                    opacity: 0.88;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Bring your videos home";
+                            color: #ffffff;
+                            font-size: 32px;
+                            font-weight: 750;
+                            horizontal-alignment: center;
+                            vertical-stretch: 0;
+                        }
+                        Text {
+                            text: "Create a task, choose how it should be converted, then add videos,\nphotos, or folders. VideoFerry remembers your queue after a restart.";
+                            color: #9d9da7;
+                            font-size: 15px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            vertical-stretch: 0;
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            SoftButton {
+                                text: "Create a task";
+                                accessible-name: "Create a new task";
+                                primary: true;
+                                min-width: 154px;
+                                clicked => {
+                                    root.begin-task();
+                                    root.task-name = "";
+                                    root.task-target-selected = -1;
+                                    root.task-builder-step = 0;
+                                    root.task-builder-open = true;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "TV  ·  Animation  ·  Camera  ·  Stabilize  ·  Trim  ·  Slideshow";
+                            color: #686872;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-stretch: 0;
+                        }
+                    }
+                }
+
+                if root.tasks.length > 0: VerticalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        height: 44px;
+                        vertical-stretch: 0;
+                        spacing: 28px;
+                        alignment: center;
+                        Text {
+                            text: root.tasks.length + (root.tasks.length == 1 ? " task in queue" : " tasks in queue");
+                            color: #ffffff;
+                            font-size: 20px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            horizontal-stretch: 0;
+                            spacing: 10px;
+                            SoftButton { text: "Move up"; enabled: root.selected-can-move && root.selected-index > 0; clicked => { root.move-selected(-1); } }
+                            SoftButton { text: "Move down"; enabled: root.selected-can-move && root.selected-index >= 0 && root.selected-index + 1 < root.tasks.length; clicked => { root.move-selected(1); } }
+                            SoftButton { text: "Remove"; accessible-name: "Remove selected"; enabled: root.selected-index >= 0; clicked => { root.remove-selected(); } }
+                            SoftButton { text: "Clear"; accessible-name: "Clear queue"; enabled: !root.is-running; clicked => { root.clear-queue(); } }
+                            SoftButton { text: root.is-running ? "Running" : "Start"; accessible-name: "Start queue"; primary: true; enabled: !root.is-running && root.pending-count > 0; min-width: 102px; clicked => { root.start-queue(); } }
+                        }
+                    }
+                    ListView {
+                        accessible-role: list;
+                        accessible-label: "Conversion queue";
+                        for task[index] in root.tasks: Rectangle {
+                            height: 132px;
+                            background: transparent;
+                            TaskCard {
+                                y: 4px;
+                                width: parent.width;
+                                task: task;
+                                item-index: index;
+                                task-count: root.tasks.length;
+                                queue-running: root.is-running;
+                                dragging: root.drag-task-index == index;
+                                drop-target: root.drag-target-index == index;
+                                selected(index) => { root.selected-index = index; root.select-task(index); }
+                                retry(index) => { root.selected-index = index; root.retry-task(index); }
+                                drag-started(index) => {
+                                    root.drag-task-index = index;
+                                    root.drag-target-index = index;
+                                }
+                                drag-hovered(index) => { root.drag-target-index = index; }
+                                drag-finished(source, target) => {
+                                    root.drag-task-index = -1;
+                                    root.drag-target-index = -1;
+                                    root.selected-index = target;
+                                    root.reorder-task(source, target);
+                                }
+                                drag-cancelled => {
+                                    root.drag-task-index = -1;
+                                    root.drag-target-index = -1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.page == 1: VerticalLayout {
+                padding: 34px;
+                spacing: 18px;
+                HorizontalLayout {
+                    height: 48px;
+                    vertical-stretch: 0;
+                    Text { text: "Finished"; color: #ffffff; font-size: 27px; font-weight: 750; vertical-alignment: center; }
+                    SoftButton {
+                        text: "Clear history";
+                        min-width: 132px;
+                        max-width: 132px;
+                        enabled: root.history.length > 0;
+                        clicked => { root.clear-history(); }
+                    }
+                }
+                if root.history.length == 0: Rectangle {
+                    vertical-stretch: 1;
+                    background: transparent;
+                    Text {
+                        text: "Your finished videos will appear here.";
+                        color: #85858f;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.history.length > 0: ListView {
+                    accessible-role: list;
+                    accessible-label: "Finished conversions";
+                    for item in root.history: Rectangle {
+                        height: 130px;
+                        background: transparent;
+                        HistoryCard { width: parent.width; item: item; }
+                    }
+                }
+            }
+
+            if root.is-running: now-playing := Rectangle {
+                x: 28px;
+                y: parent.height - 274px;
+                width: parent.width - 56px;
+                height: 252px;
+                border-radius: 18px;
+                background: #202026f2;
+                border-width: 1px;
+                border-color: #3b3b44;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #000000a0;
+                drop-shadow-offset-y: 8px;
+                accessible-role: region;
+                accessible-label: "Current conversion";
+
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        height: 84px;
+                        vertical-stretch: 0;
+                        spacing: 14px;
+                        alignment: center;
+                        Rectangle {
+                            width: 52px;
+                            height: 52px;
+                            horizontal-stretch: 0;
+                            border-radius: 12px;
+                            background: @linear-gradient(145deg, #e50914 0%, #66101b 100%);
+                            Text { text: root.is-paused ? "Ⅱ" : "▶"; color: white; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        active-copy-slot := Rectangle {
+                            width: max(120px, now-playing.width - 98px);
+                            height: 84px;
+                            horizontal-stretch: 0;
+                            vertical-stretch: 0;
+                            background: transparent;
+                            clip: true;
+                            HoverText {
+                                y: 0px;
+                                width: parent.width;
+                                horizontal-stretch: 0;
+                                text: root.active-title;
+                                text-color: #ffffff;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            HoverText { y: 25px; width: parent.width; horizontal-stretch: 0; text: root.active-detail; text-color: #9999a3; font-size: 12px; }
+                            HorizontalLayout {
+                                y: 48px;
+                                width: parent.width;
+                                height: 18px;
+                                Text {
+                                    text: "Current file progress";
+                                    color: #aaaab5;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: round(root.progress * 100) + "%  ·  " + root.live-position + " / " + root.live-duration;
+                                    color: #f0f0f4;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            current-file-track := Rectangle {
+                                y: 70px;
+                                width: parent.width;
+                                height: 12px;
+                                border-radius: 6px;
+                                background: #34343d;
+                                border-width: 1px;
+                                border-color: #50505c;
+                                clip: true;
+                                accessible-role: progress-indicator;
+                                accessible-label: "Current file progress";
+                                accessible-value-minimum: 0;
+                                accessible-value-maximum: 100;
+                                accessible-value: round(root.progress * 100) + "%";
+                                Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: current-file-track.width * root.progress;
+                                    height: current-file-track.height;
+                                    background: @linear-gradient(90deg, #e50914 0%, #ff6570 100%);
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 44px;
+                        vertical-stretch: 0;
+                        spacing: 8px;
+                        alignment: center;
+                        Switch {
+                            width: 138px;
+                            horizontal-stretch: 0;
+                            text: "Keep awake";
+                            accessible-label: "Keep the computer awake while converting";
+                            checked: root.prevent-sleep;
+                            toggled => { root.set-prevent-sleep(self.checked); }
+                        }
+                        Rectangle { min-width: 0px; horizontal-stretch: 1; background: transparent; }
+                        SoftButton {
+                            text: root.preview-enabled ? "Hide preview" : "Preview";
+                            accessible-name: root.preview-enabled ? "Hide live conversion preview" : "Show live conversion preview";
+                            width: 112px;
+                            clicked => { root.set-live-preview(!root.preview-enabled); }
+                        }
+                        SoftButton { width: 94px; text: root.is-paused ? "Resume" : "Pause"; accessible-name: root.is-paused ? "Resume conversion" : "Pause conversion"; clicked => { root.toggle-pause(); } }
+                        SoftButton { width: 174px; text: "Pause after this file"; accessible-name: "Pause after this file"; clicked => { root.pause-after-current(); } }
+                        SoftButton { width: 86px; text: "Stop"; accessible-name: "Stop current"; clicked => { root.stop-current(); } }
+                        SoftButton { width: 94px; text: "Stop all"; clicked => { root.stop-all(); } }
+                    }
+
+                    HorizontalLayout {
+                        height: 24px;
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        LiveMetric { label: "Position"; value: root.live-position; }
+                        LiveMetric { label: "Duration"; value: root.live-duration; }
+                        LiveMetric { label: "Frame"; value: root.live-frames; }
+                        LiveMetric { label: "Convert FPS"; value: root.live-conversion-fps; }
+                        LiveMetric { label: "Speed"; value: root.live-conversion-speed; }
+                    }
+                    HorizontalLayout {
+                        height: 24px;
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        LiveMetric { label: "Original FPS"; value: root.live-original-fps; }
+                        LiveMetric { label: "Target FPS"; value: root.live-target-fps; }
+                        LiveMetric { label: "Encoder"; value: root.live-encoder; }
+                        LiveMetric { label: "Quality"; value: root.live-quality; }
+                        LiveMetric { label: "Preset"; value: root.live-preset; }
+                    }
+                    HorizontalLayout {
+                        height: 24px;
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        LiveMetric { label: "Audio kept"; value: root.live-carried-audio; }
+                        LiveMetric { label: "Subtitles kept"; value: root.live-carried-subtitles; }
+                        LiveMetric { label: "Spent"; value: root.live-spent; }
+                        LiveMetric { label: "Est. total"; value: root.live-estimated-total; }
+                        LiveMetric { label: "Remaining"; value: root.live-remaining; }
+                    }
+                }
+            }
+
+            if root.is-running && root.preview-enabled: live-preview-panel := Rectangle {
+                x: 28px;
+                y: parent.height - 472px;
+                width: 320px;
+                height: 190px;
+                border-radius: 16px;
+                background: #19191ef5;
+                border-width: 1px;
+                border-color: #3b3b44;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #000000a0;
+                drop-shadow-offset-y: 8px;
+                accessible-role: region;
+                accessible-label: "Live conversion preview";
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        height: 22px;
+                        vertical-stretch: 0;
+                        Text { text: "Live preview"; color: #f2f2f5; font-size: 13px; font-weight: 650; vertical-alignment: center; }
+                        Text { text: "Preview only — output quality is unchanged"; color: #686872; font-size: 9px; horizontal-alignment: right; vertical-alignment: center; }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 10px;
+                        background: #0b0b0e;
+                        clip: true;
+                        if root.has-live-preview: Image {
+                            source: root.live-preview;
+                            image-fit: contain;
+                        }
+                        if !root.has-live-preview: Text {
+                            text: "Waiting for the next converted frame…";
+                            color: #777781;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+
+        status-bar := Rectangle {
+            height: 30px;
+            vertical-stretch: 0;
+            background: #0b0b0d;
+            accessible-role: content-info;
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                spacing: 10px;
+                alignment: center;
+                HoverText { text: root.activity; text-color: #777781; font-size: 10px; }
+                HoverText { text: root.engine-status; text-color: #55555e; font-size: 10px; }
+            }
+        }
+    }
+
+    if root.settings-open || root.task-builder-open: settings-scrim := Rectangle {
+        background: #0000008c;
+        TouchArea {
+            clicked => {
+                if (!root.task-builder-open) {
+                    root.settings-open = false;
+                }
+            }
+        }
+    }
+
+    if HoverState.visible: hover-detail := Rectangle {
+        x: 24px;
+        y: 78px;
+        width: min(520px, parent.width - 48px);
+        height: 96px;
+        border-radius: 12px;
+        background: #292930f7;
+        border-width: 1px;
+        border-color: #51515c;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #000000a0;
+        drop-shadow-offset-y: 6px;
+        accessible-role: region;
+        accessible-label: "Full text: " + HoverState.text;
+        Text {
+            x: 16px;
+            y: 12px;
+            width: parent.width - 32px;
+            height: parent.height - 24px;
+            text: HoverState.text;
+            color: #f3f3f6;
+            font-size: 12px;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.settings-open || root.task-builder-open: settings-panel := Rectangle {
+        x: parent.width - 430px;
+        y: 0px;
+        width: 430px;
+        height: parent.height;
+        background: #151519;
+        border-width: 1px;
+        border-color: #303038;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #000000b0;
+        drop-shadow-offset-x: -8px;
+        accessible-role: complementary;
+        accessible-label: root.task-builder-open ? "New task" : "Conversion settings";
+
+        Rectangle {
+            background: transparent;
+            HorizontalLayout {
+                x: 26px;
+                y: 18px;
+                width: parent.width - 52px;
+                height: 52px;
+                VerticalLayout {
+                    spacing: 1px;
+                    Text {
+                        text: root.task-builder-open
+                            ? (root.task-builder-step == 0 ? "New task" : "Add media")
+                            : "Task defaults";
+                        color: #ffffff;
+                        font-size: 23px;
+                        font-weight: 750;
+                        vertical-stretch: 0;
+                    }
+                    if root.task-builder-open: Text {
+                        text: root.task-builder-step == 0 ? "1 of 2  ·  Configure" : "2 of 2  ·  Files and folders";
+                        color: #777781;
+                        font-size: 11px;
+                        vertical-stretch: 0;
+                    }
+                }
+                SoftButton {
+                    text: root.task-builder-open ? "Cancel" : "Done";
+                    clicked => {
+                        if (root.task-builder-open) {
+                            root.task-drop-active = false;
+                            root.cancel-task();
+                            root.task-builder-open = false;
+                        } else {
+                            root.settings-open = false;
+                        }
+                    }
+                }
+            }
+            if !root.task-builder-open || root.task-builder-step == 0: ScrollView {
+                x: 26px;
+                y: 86px;
+                width: parent.width - 52px;
+                height: parent.height - (root.task-builder-open ? 174px : 102px);
+                VerticalLayout {
+                    padding-right: 10px;
+                    spacing: 16px;
+                    Text { text: "What are you making?"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
+                    GridLayout {
+                        spacing: 8px;
+                        Row {
+                            ModeChip { text: "TV"; selected: root.mode-index == 0; enabled: root.settings-editable; clicked => { root.set-mode(0); } }
+                            ModeChip { text: "Animation"; selected: root.mode-index == 1; enabled: root.settings-editable; clicked => { root.set-mode(1); } }
+                            ModeChip { text: "Camera"; selected: root.mode-index == 2; enabled: root.settings-editable; clicked => { root.set-mode(2); } }
+                        }
+                        Row {
+                            ModeChip { text: "Stabilize"; selected: root.mode-index == 3; enabled: root.settings-editable; clicked => { root.set-mode(3); } }
+                            ModeChip { text: "Trim"; selected: root.mode-index == 4; enabled: root.settings-editable; clicked => { root.set-mode(4); } }
+                            ModeChip { text: "Slideshow"; selected: root.mode-index == 5; enabled: root.settings-editable; clicked => { root.set-mode(5); } }
+                        }
+                    }
+                    Rectangle { height: 1px; vertical-stretch: 0; background: #2a2a31; }
+
+                    if root.show-encoder: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Video format"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
+                        ComboBox {
+                            accessible-label: "Video format";
+                            enabled: root.settings-editable;
+                            model: root.encoder-labels;
+                            current-index: root.encoder-index;
+                            selected(value) => { root.set-encoder(self.current-index); }
+                        }
+                    }
+
+                    if root.show-fps: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Frame rate"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
+                        ComboBox {
+                            accessible-label: "Frame rate";
+                            enabled: root.settings-editable;
+                            model: root.fps-labels;
+                            current-index: root.fps-index;
+                            selected(value) => { root.set-fps-mode(self.current-index); }
+                        }
+                        if root.show-explicit-fps: VerticalLayout {
+                            spacing: 5px;
+                            HorizontalLayout {
+                                Text { text: "Exact FPS"; color: #9999a3; font-size: 12px; }
+                                Text { text: round(root.explicit-fps * 1000) / 1000; color: #ff6973; font-size: 12px; horizontal-alignment: right; }
+                            }
+                            Slider {
+                                accessible-label: "Exact FPS";
+                                enabled: root.settings-editable;
+                                minimum: 1;
+                                maximum: 120;
+                                value: root.explicit-fps;
+                                step: 0.001;
+                                changed(value) => { root.set-explicit-fps(value); }
+                            }
+                        }
+                    }
+
+                    if root.show-quality: VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            Text { text: "Picture quality"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                            Text { text: round(root.quality) + " CRF"; color: #ff6973; font-size: 12px; font-weight: 650; horizontal-alignment: right; }
+                        }
+                        Slider {
+                            accessible-label: "Picture quality (CRF)";
+                            enabled: root.settings-editable;
+                            minimum: 0;
+                            maximum: 63;
+                            value: root.quality;
+                            step: 0.5;
+                            changed(value) => { root.set-quality(value); }
+                        }
+                        Text { text: "Lower values keep more detail and create larger files."; color: #74747e; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
+                    }
+
+                    if root.show-speed: Rectangle {
+                        height: 58px;
+                        vertical-stretch: 0;
+                        border-radius: 12px;
+                        background: #1d1d23;
+                        border-width: 1px;
+                        border-color: #303038;
+                        HorizontalLayout {
+                            padding: 10px;
+                            Text { text: "Encoding pace"; color: #c9c9cf; font-size: 13px; vertical-alignment: center; }
+                            TextButton { text: root.speed; selected: true; enabled: root.settings-editable; clicked => { root.cycle-speed(); } }
+                        }
+                    }
+
+                    if root.mode-index == 4: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Trim range"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "Start"; color: #85858f; font-size: 11px; }
+                                LineEdit {
+                                    accessible-label: "Trim start";
+                                    enabled: root.settings-editable;
+                                    text: root.trim-start;
+                                    placeholder-text: "00:00";
+                                    edited(value) => { root.set-trim-start(value); }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "End"; color: #85858f; font-size: 11px; }
+                                LineEdit {
+                                    accessible-label: "Trim end";
+                                    enabled: root.settings-editable;
+                                    text: root.trim-end;
+                                    placeholder-text: "00:01";
+                                    edited(value) => { root.set-trim-end(value); }
+                                }
+                            }
+                        }
+                        Text { text: "Use MM:SS or HH:MM:SS."; color: #74747e; font-size: 11px; }
+                    }
+
+                    if root.mode-index == 2: VerticalLayout {
+                        spacing: 8px;
+                        Switch {
+                            text: "Apply matching DJI LUT";
+                            enabled: root.settings-editable;
+                            checked: root.apply-lut;
+                            toggled => { root.set-apply-lut(self.checked); }
+                        }
+                        Text { text: "DJI OsmoAction6 → action6.cube\nDJI OsmoPocket3 → pocket3.cube"; color: #74747e; font-size: 11px; wrap: word-wrap; }
+                    }
+
+                    if root.mode-index == 3: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Stabilization strength"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                        ComboBox {
+                            accessible-label: "Stabilization strength";
+                            enabled: root.settings-editable;
+                            model: ["Gentle", "Balanced", "Steady", "Strong", "Maximum"];
+                            current-index: root.stabilize-index;
+                            selected(value) => { root.set-stabilize-strength(self.current-index); }
+                        }
+                        Text { text: "Uses native two-pass stabilization when available."; color: #74747e; font-size: 11px; wrap: word-wrap; }
+                    }
+
+                    if root.mode-index == 5: VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            Text { text: "Seconds per photo"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                            Text { text: round(root.slideshow-interval * 10) / 10 + " s"; color: #ff6973; font-size: 12px; horizontal-alignment: right; }
+                        }
+                        Slider {
+                            accessible-label: "Seconds per photo";
+                            enabled: root.settings-editable;
+                            minimum: 0.5;
+                            maximum: 30;
+                            value: root.slideshow-interval;
+                            step: 0.5;
+                            changed(value) => { root.set-slideshow-interval(value); }
+                        }
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text { text: "Frames per second"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                            SpinBox {
+                                accessible-label: "Slideshow frames per second";
+                                enabled: root.settings-editable;
+                                minimum: 1;
+                                maximum: 120;
+                                value: root.slideshow-fps;
+                                edited => { root.set-slideshow-fps(self.value); }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text { text: "Resolution"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                            ComboBox {
+                                accessible-label: "Slideshow resolution";
+                                enabled: root.settings-editable;
+                                model: ["1080p (1920×1080)", "4K (3840×2160)"];
+                                current-index: root.slideshow-resolution-index;
+                                selected(value) => { root.set-slideshow-resolution(self.current-index); }
+                            }
+                        }
+                        Switch {
+                            text: "Group portrait photos into collage slides";
+                            enabled: root.settings-editable;
+                            checked: root.slideshow-collage;
+                            toggled => { root.set-slideshow-collage(self.checked); }
+                        }
+                        VerticalLayout {
+                            spacing: 7px;
+                            HorizontalLayout {
+                                Text { text: "Soundtrack"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
+                                SoftButton { text: "Add audio"; height: 34px; enabled: root.settings-editable; clicked => { root.add-slideshow-audio(); } }
+                            }
+                            if root.slideshow-audio-labels.length == 0: Text { text: "No audio — your slideshow will be silent."; color: #74747e; font-size: 11px; }
+                            for label[index] in root.slideshow-audio-labels: TextButton {
+                                text: label;
+                                selected: root.slideshow-audio-selected == index;
+                                enabled: root.settings-editable;
+                                clicked => { root.select-slideshow-audio(index); }
+                            }
+                            if root.slideshow-audio-labels.length > 0: HorizontalLayout {
+                                spacing: 6px;
+                                SoftButton { text: "Up"; height: 32px; enabled: root.settings-editable && root.slideshow-audio-selected > 0; clicked => { root.move-slideshow-audio(-1); } }
+                                SoftButton { text: "Down"; height: 32px; enabled: root.settings-editable && root.slideshow-audio-selected >= 0 && root.slideshow-audio-selected + 1 < root.slideshow-audio-labels.length; clicked => { root.move-slideshow-audio(1); } }
+                                SoftButton { text: "Remove"; height: 32px; enabled: root.settings-editable && root.slideshow-audio-selected >= 0; clicked => { root.remove-slideshow-audio(); } }
+                                SoftButton { text: "Clear"; height: 32px; enabled: root.settings-editable; clicked => { root.clear-slideshow-audio(); } }
+                            }
+                        }
+                        Text { text: "Output: slideshow.mp4 beside the first image or inside the chosen folder."; color: #74747e; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+            }
+
+            if root.task-builder-open && root.task-builder-step == 0: Rectangle {
+                x: 0px;
+                y: parent.height - 76px;
+                width: parent.width;
+                height: 76px;
+                background: #18181d;
+                border-width: 1px;
+                border-color: #2c2c33;
+                HorizontalLayout {
+                    padding-left: 26px;
+                    padding-right: 26px;
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    Text {
+                        text: "Next, add the media for this task.";
+                        color: #85858f;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    SoftButton {
+                        text: "Continue";
+                        accessible-name: "Continue to add media";
+                        primary: true;
+                        min-width: 112px;
+                        clicked => {
+                            if (root.prepare-task()) {
+                                root.task-builder-step = 1;
+                                root.task-target-selected = root.task-draft-targets.length > 0 ? 0 : -1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.task-builder-open && root.task-builder-step == 1: Rectangle {
+                x: 26px;
+                y: 88px;
+                width: parent.width - 52px;
+                height: parent.height - 176px;
+                background: transparent;
+                VerticalLayout {
+                    spacing: 13px;
+                    VerticalLayout {
+                        height: 63px;
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        Text { text: "Task name (optional)"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
+                        LineEdit {
+                            accessible-label: "Task name";
+                            text: root.task-name;
+                            placeholder-text: "Uses the first file or folder name";
+                            edited(value) => { root.task-name = value; }
+                        }
+                    }
+                    Rectangle {
+                        height: 52px;
+                        vertical-stretch: 0;
+                        border-radius: 12px;
+                        background: #1e1e24;
+                        border-width: 1px;
+                        border-color: #303038;
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 10px;
+                            Rectangle { width: 8px; height: 8px; horizontal-stretch: 0; border-radius: 4px; background: #e50914; }
+                            summary-slot := Rectangle {
+                                min-width: 0px;
+                                preferred-width: 0px;
+                                horizontal-stretch: 1;
+                                background: transparent;
+                                clip: true;
+                                HoverText { y: (parent.height - self.height) / 2; width: parent.width; horizontal-stretch: 0; text: root.task-draft-summary; text-color: #c9c9cf; font-size: 12px; font-weight: 600; }
+                            }
+                        TextButton {
+                            text: "Edit";
+                            accessible-name: "Edit task configuration";
+                            min-width: 54px;
+                            clicked => {
+                                root.task-drop-active = false;
+                                root.task-builder-step = 0;
+                            }
+                        }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 40px;
+                        vertical-stretch: 0;
+                        spacing: 8px;
+                        SoftButton { text: "Add files"; primary: true; min-width: 112px; clicked => { root.add-task-files(); } }
+                        SoftButton {
+                            text: "Add folder";
+                            min-width: 116px;
+                            enabled: root.mode-index != 4;
+                            clicked => { root.add-task-folder(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Text {
+                            text: root.task-draft-targets.length + (root.task-draft-targets.length == 1 ? " item" : " items");
+                            color: #777781;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    media-drop-zone := Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 14px;
+                        background: root.task-drop-active ? #28161b : #19191e;
+                        border-width: root.task-drop-active ? 2px : 1px;
+                        border-color: root.task-drop-active ? #e50914 : #303038;
+                        clip: true;
+                        accessible-role: region;
+                        accessible-label: "Task media drop area";
+                        animate background, border-color { duration: 120ms; easing: ease-out; }
+
+                        if root.task-draft-targets.length == 0: VerticalLayout {
+                            padding-left: 22px;
+                            padding-right: 22px;
+                            alignment: center;
+                            spacing: 7px;
+                            Text {
+                                text: root.task-drop-active ? "Release to add to this task"
+                                    : root.mode-index == 5 ? "Drop photos or a folder of photos here"
+                                    : root.mode-index == 4 ? "Drop one video here"
+                                    : "Drop videos or folders here";
+                                color: root.task-drop-active ? #ffffff : #b8b8c0;
+                                font-size: 14px;
+                                font-weight: 650;
+                                horizontal-alignment: center;
+                                vertical-stretch: 0;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.task-drop-active ? "" : "or use Add files / Add folder above";
+                                color: #707079;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-stretch: 0;
+                            }
+                        }
+
+                        if root.task-draft-targets.length > 0: ScrollView {
+                            x: 8px;
+                            y: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height - 16px;
+                            accessible-role: list;
+                            accessible-label: "Task media";
+                            VerticalLayout {
+                                padding-right: 8px;
+                                spacing: 7px;
+                                for target[index] in root.task-draft-targets: TaskTargetRow {
+                                    path: target;
+                                    item-index: index;
+                                    selected: root.task-target-selected == index;
+                                    clicked => { root.task-target-selected = index; }
+                                }
+                            }
+                        }
+
+                        if root.task-drop-active && root.task-draft-targets.length > 0: Rectangle {
+                            background: #171014e8;
+                            Text {
+                                text: "Release to add to this task";
+                                color: #ffffff;
+                                font-size: 14px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 36px;
+                        vertical-stretch: 0;
+                        spacing: 7px;
+                        SoftButton {
+                            text: "Move up";
+                            height: 34px;
+                            enabled: root.task-target-selected > 0;
+                            clicked => { root.task-target-selected = root.move-task-target(root.task-target-selected, -1); }
+                        }
+                        SoftButton {
+                            text: "Move down";
+                            height: 34px;
+                            enabled: root.task-target-selected >= 0 && root.task-target-selected + 1 < root.task-draft-targets.length;
+                            clicked => { root.task-target-selected = root.move-task-target(root.task-target-selected, 1); }
+                        }
+                        SoftButton {
+                            text: "Remove";
+                            height: 34px;
+                            enabled: root.task-target-selected >= 0;
+                            clicked => {
+                                if (root.remove-task-target(root.task-target-selected)) {
+                                    root.task-target-selected = root.task-target-selected >= root.task-draft-targets.length - 1
+                                        ? root.task-draft-targets.length - 2
+                                        : root.task-target-selected;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.task-builder-open && root.task-builder-step == 1: Rectangle {
+                x: 0px;
+                y: parent.height - 76px;
+                width: parent.width;
+                height: 76px;
+                background: #18181d;
+                border-width: 1px;
+                border-color: #2c2c33;
+                HorizontalLayout {
+                    padding-left: 26px;
+                    padding-right: 26px;
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    SoftButton {
+                        text: "Back";
+                        clicked => {
+                            root.task-drop-active = false;
+                            root.task-builder-step = 0;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    SoftButton {
+                        text: "Create task";
+                        accessible-name: "Create task and add it to the queue";
+                        primary: true;
+                        min-width: 126px;
+                        enabled: root.task-draft-targets.length > 0;
+                        clicked => {
+                            if (root.create-task(root.task-name)) {
+                                root.task-drop-active = false;
+                                root.task-builder-open = false;
+                                root.task-name = "";
+                                root.task-target-selected = -1;
+                                root.page = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

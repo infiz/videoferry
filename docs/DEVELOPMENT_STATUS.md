@@ -20,12 +20,16 @@ passed the parity checks documented in `IMPLEMENTATION_PLAN.md`.
 The workspace establishes the ownership boundaries, queue/control model,
 preset catalog, and a consumer-oriented Slint GUI. The main window uses a
 cinematic dark surface, simple queue/history navigation, media-style queue
-cards, an active-conversion bar, and a settings drawer instead of a dashboard
-sidebar. New work follows the Python sequence: create a task, choose its type
+cards, a docked compact/expandable active-conversion panel, and a settings drawer
+instead of a dashboard sidebar. Finished conversions can be searched by name or
+path and opened, revealed in the file manager, or copied directly. New work
+follows the Python sequence: create a task, choose its type
 and conversion settings, then add and reorder files or folders before creating
 one aggregate queue item. Files and folders can be selected with the picker
 buttons or dropped directly onto the task builder's media box on Windows and
-macOS. With the `native-ffmpeg` feature enabled,
+macOS. Before creation, the builder shows the exact output plan, source size when
+available, and whether the original will move only after validation. With the
+`native-ffmpeg` feature enabled,
 the bridge now initializes the bundled FFmpeg libraries, reports exact library
 versions and licenses, tests hardware-device availability, and probes container
 and stream information directly through `libavformat`. Hardware encoders are
@@ -204,10 +208,15 @@ size per minute. Source probing happens on the worker thread. The window title
 marks an active conversion. The temporary egui fallback retains the copyable
 activity log and detailed diagnostic views while those surfaces are redesigned
 for Slint.
-The Slint converting surface shows media position and total duration, processing
-FPS and speed, original and target FPS, encoder, quality, preset, pause-adjusted
-spent time, estimated total time, and remaining time without blocking queue
-management.
+The Slint converting surface shows file progress and essential controls in a
+compact docked panel. Its Details control expands media position and total
+duration, processing FPS and speed, original and target FPS, encoder, quality,
+preset, carried audio/subtitle streams, pause-adjusted spent time, estimated total
+time, and remaining time without blocking queue management. Pause-after-this-file
+has a visible armed/cancel state, Stop all requires confirmation, and queue
+completion produces both an in-app summary and a best-effort native notification.
+Failed cards expose their error and a copy action instead of relying on a transient
+status line.
 Each task card keeps a persistent three-part file-count bar: work completed before
 the current run, work completed during the current run, and unfinished work. The
 bottom conversion bar is deliberately separate and reports only the active file's
@@ -319,6 +328,9 @@ holds the input briefly to inspect the live progress surface and queue controls,
 confirms that no child process exists, then verifies publication, the byte-identical
 `original/` backup, cleanup of staging files, and completed-history persistence and
 clearing. It creates a per-user Inno Setup installer when `ISCC.exe` is available.
+A separate screenshot regression command captures Queue, conversion, settings,
+Finished, attention, and confirmation states at 900x620, 1180x760, 1440x900, and
+minimum-window 125%/150% scale factors.
 A non-PATH compiler can be supplied with
 `-InnoCompiler C:\path\to\ISCC.exe` or `VIDEOFERRY_INNO_COMPILER`; the build also
 recognizes `.local\inno-setup\ISCC.exe`.

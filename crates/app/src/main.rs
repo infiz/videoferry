@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use crate::platform_actions::{open_path_with_default_app, reveal_path_in_file_manager};
 use eframe::egui;
 use persistence::{AppPreferences, CompletedHistoryRow, StateStore};
 use platform_indicator::PlatformIndicator;
@@ -126,6 +127,7 @@ struct ConverterApp {
     available_encoders: Vec<Encoder>,
     engine_discovery: EngineDiscoveryState,
     activity: String,
+    completion_notice: String,
     progress: Option<ConversionProgress>,
     worker: Option<WorkerState>,
     photo_review: Option<PhotoReviewState>,
@@ -185,6 +187,32 @@ fn encoding_ui_settings_for(
         .get(&(mode, encoder))
         .cloned()
         .unwrap_or_else(|| EncodingUiSettings::from(&default_settings(mode, encoder)))
+}
+
+fn speed_options(encoder: Encoder) -> Vec<String> {
+    if matches!(encoder, Encoder::X264 | Encoder::X265) {
+        [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    } else if encoder == Encoder::SvtAv1 {
+        (0..=13).map(|value| value.to_string()).collect()
+    } else if encoder.is_nvenc() {
+        (1..=7).map(|value| format!("p{value}")).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 struct ReviewPhoto {
@@ -566,6 +594,7 @@ impl Default for ConverterApp {
             } else {
                 activity_messages.join(" · ")
             },
+            completion_notice: String::new(),
             progress: None,
             worker: None,
             photo_review: None,
@@ -3689,6 +3718,7 @@ impl ConverterApp {
     }
 
     fn start_queue(&mut self, context: &egui::Context) {
+        self.completion_notice.clear();
         let pending_ids = self
             .queue
             .tasks()
@@ -3721,8 +3751,36 @@ impl ConverterApp {
             return;
         }
         self.queue_run_state = QueueRunState::Idle;
-        "Queue complete".clone_into(&mut self.activity);
+        self.completion_notice = self.queue_completion_summary();
+        self.activity.clone_from(&self.completion_notice);
         self.persist_queue();
+    }
+
+    fn queue_completion_summary(&self) -> String {
+        let mut previous = 0_usize;
+        let mut this_run = 0_usize;
+        let mut failed = 0_usize;
+        let mut remaining = 0_usize;
+        for task in self.queue.tasks() {
+            let counts = Self::task_display_counts(
+                task,
+                &self.folder_summaries,
+                self.task_run_failures.get(&task.id),
+            );
+            let before = self
+                .task_run_start_converted
+                .get(&task.id)
+                .copied()
+                .unwrap_or(counts.converted)
+                .min(counts.files);
+            previous = previous.saturating_add(before);
+            this_run = this_run.saturating_add(counts.converted.saturating_sub(before));
+            failed = failed.saturating_add(counts.failed);
+            remaining = remaining.saturating_add(counts.remaining);
+        }
+        format!(
+            "Queue complete — {this_run} completed this run, {previous} already complete, {failed} failed, {remaining} remaining"
+        )
     }
 
     #[expect(
@@ -4120,12 +4178,68 @@ pub struct SlintController {
     app: ConverterApp,
     context: egui::Context,
     task_draft: Option<SlintTaskDraft>,
+    history_filter: String,
 }
 
 #[derive(Clone, Debug)]
 struct SlintTaskDraft {
     settings: QueueSettings,
     targets: Vec<PathBuf>,
+}
+
+fn task_draft_output_summary(draft: &SlintTaskDraft) -> String {
+    let Some(first) = draft.targets.first() else {
+        return "Add media to see the exact output and original-file safety plan.".to_owned();
+    };
+    let mode = draft.settings.mode;
+    let output = if mode == ContentMode::Trim {
+        trim_output_path(
+            first,
+            draft.settings.trim_start.unwrap_or_default(),
+            draft.settings.trim_end.unwrap_or_default(),
+        )
+        .display()
+        .to_string()
+    } else if mode == ContentMode::Stabilize {
+        if first.is_dir() {
+            format!("{} (one *_stabilized file per source)", first.display())
+        } else {
+            stabilized_output_path(first).display().to_string()
+        }
+    } else if mode == ContentMode::PhotoSlideshow {
+        next_slideshow_output_path(first).display().to_string()
+    } else if first.is_dir() {
+        let extension = descriptor(mode, draft.settings.encoder)
+            .container
+            .extension();
+        format!("{} (one .{extension} file per source)", first.display())
+    } else {
+        conversion_output_path(first, descriptor(mode, draft.settings.encoder).container)
+            .display()
+            .to_string()
+    };
+    let source_size = first
+        .metadata()
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map_or_else(
+            || "Folder size is checked while the task is scanned.".to_owned(),
+            |metadata| {
+                format!(
+                    "Selected source size: {} MB.",
+                    format_size_mb(Some(metadata.len()))
+                )
+            },
+        );
+    let safety = if matches!(
+        mode,
+        ContentMode::Tv | ContentMode::Animation | ContentMode::CameraVideos
+    ) {
+        "After the new file is validated, the original is moved into an original folder; failed conversions leave it in place."
+    } else {
+        "The source remains in place; the result is published only after validation."
+    };
+    format!("Output: {output}\n{safety}\n{source_size}")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4148,11 +4262,13 @@ pub struct SlintTaskSnapshot {
     pub can_run: bool,
     pub can_retry: bool,
     pub can_reorder: bool,
+    pub error_detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlintHistorySnapshot {
     pub title: String,
+    pub path: String,
     pub subtitle: String,
     pub detail: String,
     pub configuration: String,
@@ -4193,6 +4309,8 @@ pub struct SlintSettingsSnapshot {
     pub quality: f32,
     pub show_quality: bool,
     pub speed: String,
+    pub speed_labels: Vec<String>,
+    pub speed_index: usize,
     pub show_speed: bool,
     pub prevent_sleep: bool,
     pub trim_start: String,
@@ -4223,12 +4341,17 @@ pub struct SlintAppSnapshot {
     pub is_paused: bool,
     pub pending_count: usize,
     pub completed_count: usize,
+    pub attention_count: usize,
+    pub history_total_count: usize,
+    pub pause_after_current: bool,
+    pub completion_notice: String,
     pub selected_index: i32,
     pub selected_can_move: bool,
     pub preview_enabled: bool,
     pub live_preview: Option<ConversionPreview>,
     pub task_draft_targets: Vec<String>,
     pub task_draft_summary: String,
+    pub task_draft_output_summary: String,
 }
 
 impl SlintController {
@@ -4487,11 +4610,17 @@ impl SlintController {
     }
 
     pub fn pause_after_current(&mut self) {
-        if self.app.worker.is_some() && self.app.queue_run_state == QueueRunState::Running {
+        if self.app.worker.is_none() {
+            return;
+        }
+        if self.app.queue_run_state == QueueRunState::PauseAfterCurrent {
+            self.app.queue_run_state = QueueRunState::Running;
+            "Scheduled pause cancelled".clone_into(&mut self.app.activity);
+        } else if self.app.queue_run_state == QueueRunState::Running {
             self.app.queue_run_state = QueueRunState::PauseAfterCurrent;
             "Queue will pause after this video".clone_into(&mut self.app.activity);
-            self.app.persist_queue();
         }
+        self.app.persist_queue();
     }
 
     pub fn stop_current(&mut self) {
@@ -4542,6 +4671,49 @@ impl SlintController {
                 self.app.activity = format!("Unable to clear history: {error}");
             }
         }
+    }
+
+    pub fn open_history_item(&mut self, path: &str) {
+        let path = PathBuf::from(path);
+        if !path.is_file() {
+            self.app.activity = format!("Converted file was not found: {}", path.display());
+            return;
+        }
+        match open_path_with_default_app(&path) {
+            Ok(()) => self.app.activity = format!("Opening {}", path.display()),
+            Err(error) => {
+                self.app.activity = format!("Unable to open {}: {error}", path.display());
+            }
+        }
+    }
+
+    pub fn reveal_history_item(&mut self, path: &str) {
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            self.app.activity = format!("Converted file was not found: {}", path.display());
+            return;
+        }
+        match reveal_path_in_file_manager(&path) {
+            Ok(()) => self.app.activity = format!("Showing {}", path.display()),
+            Err(error) => {
+                self.app.activity = format!("Unable to show {}: {error}", path.display());
+            }
+        }
+    }
+
+    pub fn set_history_filter(&mut self, filter: String) {
+        self.history_filter = filter;
+    }
+
+    pub fn report_clipboard_result(&mut self, label: &str, error: Option<&str>) {
+        self.app.activity = error.map_or_else(
+            || format!("Copied {label}"),
+            |error| format!("Unable to copy {label}: {error}"),
+        );
+    }
+
+    pub fn dismiss_completion(&mut self) {
+        self.app.completion_notice.clear();
     }
 
     pub fn set_mode(&mut self, index: usize) {
@@ -4712,35 +4884,12 @@ impl SlintController {
         self.app.sync_preferences();
     }
 
-    pub fn cycle_speed(&mut self) {
-        let options: Vec<String> = if matches!(self.app.encoder, Encoder::X264 | Encoder::X265) {
-            [
-                "ultrafast",
-                "superfast",
-                "veryfast",
-                "faster",
-                "fast",
-                "medium",
-                "slow",
-                "slower",
-                "veryslow",
-                "placebo",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-        } else if self.app.encoder == Encoder::SvtAv1 {
-            (0..=13).map(|value| value.to_string()).collect()
-        } else if self.app.encoder.is_nvenc() {
-            (1..=7).map(|value| format!("p{value}")).collect()
-        } else {
+    pub fn set_speed(&mut self, index: usize) {
+        let options = speed_options(self.app.encoder);
+        let Some(speed) = options.get(index) else {
             return;
         };
-        let next = options
-            .iter()
-            .position(|option| option == &self.app.speed_preset)
-            .map_or(0, |index| (index + 1) % options.len());
-        self.app.speed_preset.clone_from(&options[next]);
+        self.app.speed_preset.clone_from(speed);
         self.app.sync_preferences();
     }
 
@@ -4853,21 +5002,36 @@ impl SlintController {
                     can_run: task.status == QueueStatus::Pending || can_retry,
                     can_retry,
                     can_reorder: task.status == QueueStatus::Pending,
+                    error_detail: task.error.clone().unwrap_or_default(),
                 }
             })
             .collect::<Vec<_>>();
+        let attention_count = tasks
+            .iter()
+            .filter(|task| !task.error_detail.is_empty())
+            .count();
+        let history_filter = self.history_filter.trim().to_lowercase();
         let history = self
             .app
             .completed_history
             .iter()
+            .filter(|row| {
+                history_filter.is_empty()
+                    || row
+                        .columns()
+                        .iter()
+                        .any(|value| value.to_lowercase().contains(&history_filter))
+            })
             .map(|row| {
                 let columns = row.columns();
-                let title = std::path::Path::new(&columns[0]).file_name().map_or_else(
-                    || columns[0].clone(),
+                let path = columns[0].clone();
+                let title = std::path::Path::new(&path).file_name().map_or_else(
+                    || path.clone(),
                     |name| name.to_string_lossy().into_owned(),
                 );
                 SlintHistorySnapshot {
                     title,
+                    path,
                     subtitle: format!("{}  ·  {}", columns[1], columns[8]),
                     detail: format!("{} min  ·  {} → {}", columns[5], columns[6], columns[7]),
                     configuration: format!(
@@ -4913,23 +5077,30 @@ impl SlintController {
         );
         let live_status = slint_live_status(&self.app);
         let fps_modes = self.fps_modes();
-        let (task_draft_targets, task_draft_summary) = self.task_draft.as_ref().map_or_else(
-            || (Vec::new(), String::new()),
-            |draft| {
-                (
-                    draft
-                        .targets
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect(),
-                    format!(
-                        "{}  ·  {}",
-                        draft.settings.mode.label(),
-                        draft.settings.encoder.user_name()
-                    ),
-                )
-            },
-        );
+        let speed_labels = speed_options(self.app.encoder);
+        let speed_index = speed_labels
+            .iter()
+            .position(|speed| speed == &self.app.speed_preset)
+            .unwrap_or_default();
+        let (task_draft_targets, task_draft_summary, task_draft_output_summary) =
+            self.task_draft.as_ref().map_or_else(
+                || (Vec::new(), String::new(), String::new()),
+                |draft| {
+                    (
+                        draft
+                            .targets
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect(),
+                        format!(
+                            "{}  ·  {}",
+                            draft.settings.mode.label(),
+                            draft.settings.encoder.user_name()
+                        ),
+                        task_draft_output_summary(draft),
+                    )
+                },
+            );
         SlintAppSnapshot {
             pending_count: self
                 .app
@@ -4945,6 +5116,10 @@ impl SlintController {
                 .iter()
                 .filter(|task| task.status == QueueStatus::Completed)
                 .count(),
+            attention_count,
+            history_total_count: self.app.completed_history.len(),
+            pause_after_current: self.app.queue_run_state == QueueRunState::PauseAfterCurrent,
+            completion_notice: self.app.completion_notice.clone(),
             tasks,
             history,
             settings: SlintSettingsSnapshot {
@@ -4979,6 +5154,8 @@ impl SlintController {
                     Encoder::X264 | Encoder::X265 | Encoder::SvtAv1
                 ) && self.app.mode != ContentMode::Trim,
                 speed: self.app.speed_preset.clone(),
+                speed_labels,
+                speed_index,
                 show_speed: (matches!(
                     self.app.encoder,
                     Encoder::X264 | Encoder::X265 | Encoder::SvtAv1
@@ -5027,6 +5204,7 @@ impl SlintController {
             live_preview: self.app.live_preview.clone(),
             task_draft_targets,
             task_draft_summary,
+            task_draft_output_summary,
         }
     }
 
@@ -7506,7 +7684,7 @@ mod tests {
     use super::{
         CompletedJob, ConverterApp, EncodingUiSettings, FolderQueueSummary, FpsUiMode,
         HistoryMediaInfo, ReviewPhotoTarget, ReviewSlideTarget, ReviewWorkerRequest,
-        StreamCarryInfo, TaskDisplayCounts, WatchedFolder, active_item_position,
+        SlintTaskDraft, StreamCarryInfo, TaskDisplayCounts, WatchedFolder, active_item_position,
         camera_run_info_from_media, cleanup_temporary_directory, collect_new_video_task_targets,
         collect_video_files, completed_history_row, default_task_name, encoded_source_matches_fps,
         encoding_ui_settings_for, estimated_output_bytes, estimated_remaining,
@@ -7523,10 +7701,11 @@ mod tests {
         rename_completed_task_directories, replacement_backup_path, restored_folder_watches,
         review_request_is_priority, run_with_retry, select_trim_source, should_inhibit_sleep,
         should_skip_queue_source, slideshow_natural_key, slideshow_review_is_editable,
-        staging_path, target_fps_status, target_fps_status_with_source, task_progress_segments,
-        temporary_file_process_id, update_extended_selection, validate_task_targets,
-        wait_for_retry, worker_error_is_locked_input, worker_error_is_queue_fatal,
-        worker_error_should_retry, workflow_shows_encoder, workflow_shows_fps,
+        staging_path, target_fps_status, target_fps_status_with_source, task_draft_output_summary,
+        task_progress_segments, temporary_file_process_id, update_extended_selection,
+        validate_task_targets, wait_for_retry, worker_error_is_locked_input,
+        worker_error_is_queue_fatal, worker_error_should_retry, workflow_shows_encoder,
+        workflow_shows_fps,
     };
     #[cfg(feature = "native-ffmpeg")]
     use super::{packaged_runtime_report, resolve_lut_path};
@@ -7572,6 +7751,42 @@ mod tests {
         assert_eq!(std::fs::read(&backup).unwrap(), b"source");
         assert!(!staging.exists());
         std::fs::remove_dir_all(&root).expect("remove test directory");
+    }
+
+    #[test]
+    fn task_builder_explains_output_and_original_file_safety() {
+        let root = temporary_test_directory("task-builder-safety");
+        let source = root.join("camera.mp4");
+        std::fs::write(&source, b"camera source").unwrap();
+        let draft = SlintTaskDraft {
+            settings: default_settings(ContentMode::CameraVideos, Encoder::X265),
+            targets: vec![source],
+        };
+
+        let summary = task_draft_output_summary(&draft);
+
+        assert!(summary.contains("Output:"));
+        assert!(summary.contains("camera.mp4"));
+        assert!(summary.contains("the original is moved into an original folder"));
+        assert!(summary.contains("Selected source size:"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_builder_keeps_specialized_workflow_sources_in_place() {
+        let root = temporary_test_directory("task-builder-stabilize-safety");
+        let source = root.join("clip.mp4");
+        std::fs::write(&source, b"camera source").unwrap();
+        let draft = SlintTaskDraft {
+            settings: default_settings(ContentMode::Stabilize, Encoder::X265),
+            targets: vec![source],
+        };
+
+        let summary = task_draft_output_summary(&draft);
+
+        assert!(summary.contains("clip_stabilized.mp4"));
+        assert!(summary.contains("The source remains in place"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

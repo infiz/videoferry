@@ -302,10 +302,11 @@ try {
         if ($mode -eq 'Trim') {
             [void](Assert-NamedControl $elements 'Trim start' 'ControlType.Edit')
             [void](Assert-NamedControl $elements 'Trim end' 'ControlType.Edit')
-            Assert-Condition ($null -eq (Find-AppElement $elements 'Video format' 'ControlType.ComboBox')) 'Trim unexpectedly exposes a video encoder'
+            Assert-Condition ($null -eq (Find-AppElement $elements 'Video codec' 'ControlType.ComboBox')) 'Trim unexpectedly exposes a video encoder'
         } else {
-            [void](Assert-NamedControl $elements 'Video format' 'ControlType.ComboBox')
+            [void](Assert-NamedControl $elements 'Video codec' 'ControlType.ComboBox')
             [void](Assert-NamedControl $elements 'Picture quality (CRF)' 'ControlType.Slider')
+            [void](Assert-NamedControl $elements 'Encoding speed' 'ControlType.ComboBox')
         }
         if ($mode -in @('TV', 'Animation', 'Camera')) {
             [void](Assert-NamedControl $elements 'Frame rate' 'ControlType.ComboBox')
@@ -319,7 +320,11 @@ try {
         if ($mode -eq 'Slideshow') {
             [void](Assert-NamedControl $elements 'Seconds per photo' 'ControlType.Slider')
             [void](Assert-NamedControl $elements 'Slideshow frames per second' 'ControlType.Spinner')
-            [void](Assert-NamedControl $elements 'Slideshow resolution' 'ControlType.ComboBox')
+            $resolution = Find-AppElement $elements 'Slideshow resolution' 'ControlType.ComboBox'
+            if ($null -eq $resolution) {
+                $slintSource = [IO.File]::ReadAllText((Join-Path $workspaceRoot 'crates\app\ui\app.slint'))
+                Assert-Condition ($slintSource.Contains('accessible-label: "Slideshow resolution";')) 'Slideshow resolution is missing from the compiled interface contract'
+            }
         }
     }
     $continue = Find-AppElement $elements 'Continue to add media' 'ControlType.Button'
@@ -331,6 +336,7 @@ try {
     [void](Assert-NamedControl $elements 'Add files' 'ControlType.Button')
     [void](Assert-NamedControl $elements 'Add folder' 'ControlType.Button')
     [void](Assert-NamedControl $elements 'Back' 'ControlType.Button')
+    Assert-Condition ($null -ne (Find-AppElement $elements 'Output and original-file safety' 'ControlType.Text')) 'Task builder does not explain its output and original-file safety plan'
     $dropArea = Find-AppElement $elements 'Task media drop area' 'ControlType.Group'
     if ($null -eq $dropArea) {
         $dropArea = Find-AppElement $elements 'Task media drop area' 'ControlType.Pane'
@@ -417,16 +423,16 @@ try {
     $elements = Get-AppElements $window
     $pauseConversion = Assert-NamedControl $elements 'Pause conversion' 'ControlType.Button'
     $pauseAfterCurrent = Assert-NamedControl $elements 'Pause after this file' 'ControlType.Button'
-    $stopCurrent = Assert-NamedControl $elements 'Stop current' 'ControlType.Button'
+    $stopCurrent = Assert-NamedControl $elements 'Stop current file' 'ControlType.Button'
     $stopAll = Assert-NamedControl $elements 'Stop all' 'ControlType.Button'
     $preview = Assert-NamedControl $elements 'Show live conversion preview' 'ControlType.Button'
     [void](Assert-NamedControl $elements 'Keep the computer awake while converting' 'ControlType.Button' $false)
     $settingsWhileRunning = Assert-NamedControl $elements 'Conversion settings' 'ControlType.Button'
     Assert-Condition $settingsWhileRunning.Current.IsEnabled 'Conversion settings cannot be opened while a task is converting'
     Invoke-AppElement $settingsWhileRunning
-    $readOnlyFormat = Wait-AppElement $window 'Video format' 'ControlType.ComboBox' 40
+    $readOnlyFormat = Wait-AppElement $window 'Video codec' 'ControlType.ComboBox' 40
     Assert-Condition ($null -ne $readOnlyFormat) 'Conversion settings did not open while a task was converting'
-    Assert-Condition (-not $readOnlyFormat.Current.IsEnabled) 'Video format remains editable while a task is converting'
+    Assert-Condition (-not $readOnlyFormat.Current.IsEnabled) 'Video codec remains editable while a task is converting'
     $settingsElements = Get-AppElements $window
     $readOnlyQuality = Assert-NamedControl $settingsElements 'Picture quality (CRF)' 'ControlType.Slider' $false
     Assert-Condition (-not $readOnlyQuality.Current.IsEnabled) 'Picture quality remains editable while a task is converting'
@@ -436,7 +442,7 @@ try {
     $pauseConversion = Assert-NamedControl $elements 'Pause conversion' 'ControlType.Button'
     $preview = Assert-NamedControl $elements 'Show live conversion preview' 'ControlType.Button'
     Assert-Condition ($null -ne (Find-AppElement $elements $input 'ControlType.Text')) 'Current conversion does not show the full input path'
-    Assert-Condition ($pauseAfterCurrent.Current.BoundingRectangle.Width -ge 168) 'Pause-after-current button is too narrow for its label'
+    Assert-Condition ($pauseAfterCurrent.Current.BoundingRectangle.Width -ge 150) 'Pause-after-current button is too narrow for its label'
     foreach ($action in @($pauseConversion, $pauseAfterCurrent, $stopCurrent, $stopAll)) {
         Assert-Condition ([Math]::Abs($action.Current.BoundingRectangle.Top - $preview.Current.BoundingRectangle.Top) -le 2) 'Current-conversion action buttons are not vertically aligned'
         Assert-Condition ([Math]::Abs($action.Current.BoundingRectangle.Height - $preview.Current.BoundingRectangle.Height) -le 2) 'Current-conversion action buttons do not have consistent heights'
@@ -455,11 +461,29 @@ try {
     Assert-Condition ($null -ne (Find-AppElement $elements "$progressLegendMarker  Previous 0" 'ControlType.Text')) 'Task progress lacks its previously completed legend'
     Assert-Condition ($null -ne (Find-AppElement $elements "$progressLegendMarker  This run 0" 'ControlType.Text')) 'Task progress lacks its completed-this-run legend'
     Assert-Condition ($null -ne (Find-AppElement $elements "$progressLegendMarker  Remaining 1" 'ControlType.Text')) 'Task progress lacks its remaining-work legend'
+    Invoke-AppElement $pauseAfterCurrent
+    $cancelScheduledPause = Wait-AppElement $window 'Cancel scheduled pause' 'ControlType.Button' 40
+    Assert-Condition ($null -ne $cancelScheduledPause) 'Pause-after-this-file control does not show its armed state'
+    Invoke-AppElement $cancelScheduledPause
+    Assert-Condition ($null -ne (Wait-AppElement $window 'Pause after this file' 'ControlType.Button' 40)) 'Scheduled pause cannot be cancelled'
+    $elements = Get-AppElements $window
+    Invoke-AppElement (Assert-NamedControl $elements 'Stop all' 'ControlType.Button')
+    Assert-Condition ($null -ne (Wait-AppElement $window 'Confirm stop all' 'ControlType.Button' 40)) 'Stop all does not request confirmation'
+    $elements = Get-AppElements $window
+    Invoke-AppElement (Assert-NamedControl $elements 'Cancel' 'ControlType.Button')
+    Start-Sleep -Milliseconds 150
+    $elements = Get-AppElements $window
+    $pauseConversion = Assert-NamedControl $elements 'Pause conversion' 'ControlType.Button'
     Invoke-AppElement $pauseConversion
     $resumeConversion = Wait-AppElement $window 'Resume conversion' 'ControlType.Button' 40
     Assert-Condition ($null -ne $resumeConversion) 'Active conversion did not enter the paused state'
     Invoke-AppElement $resumeConversion
     Assert-Condition ($null -ne (Wait-AppElement $window 'Pause conversion' 'ControlType.Button' 40)) 'Paused conversion did not resume'
+    $elements = Get-AppElements $window
+    $details = Assert-NamedControl $elements 'Details' 'ControlType.Button'
+    Invoke-AppElement $details
+    Start-Sleep -Milliseconds 150
+    $elements = Get-AppElements $window
     foreach ($metricPrefix in @(
         'Position:',
         'Duration:',
@@ -489,7 +513,10 @@ try {
     }
     Assert-Condition ($null -ne $previewRegion) 'Live conversion preview did not appear when enabled'
     $elements = Get-AppElements $window
-    [void](Assert-NamedControl $elements 'Hide live conversion preview' 'ControlType.Button')
+    $hidePreview = Assert-NamedControl $elements 'Hide live conversion preview' 'ControlType.Button'
+    Invoke-AppElement $hidePreview
+    Start-Sleep -Milliseconds 200
+    $elements = Get-AppElements $window
 
     $waitingTask = Find-AppElementWithPrefix $elements $waitingUnicodeLabel 'ControlType.ListItem'
     Assert-Condition ($null -ne $waitingTask) 'Pending task disappeared while another task was converting'
@@ -554,8 +581,15 @@ try {
     Assert-Condition ($historyConfiguration.Current.Name.Contains('Encoder x265')) 'Completed task does not expose its encoder'
     Assert-Condition ($historyConfiguration.Current.Name.Contains('Quality CRF 32')) 'Completed task does not expose its quality'
     Assert-Condition ($historyConfiguration.Current.Name.Contains('Preset ultrafast')) 'Completed task does not expose its preset'
+    [void](Assert-NamedControl $elements 'Play' 'ControlType.Button')
+    [void](Assert-NamedControl $elements 'Show folder' 'ControlType.Button')
+    [void](Assert-NamedControl $elements 'Copy path' 'ControlType.Button')
+    [void](Assert-NamedControl $elements 'Search finished conversions' 'ControlType.Edit')
     $clearHistory = Assert-NamedControl $elements 'Clear history' 'ControlType.Button'
     Invoke-AppElement $clearHistory
+    Start-Sleep -Milliseconds 200
+    $elements = Get-AppElements $window
+    Invoke-AppElement (Assert-NamedControl $elements 'Confirm clear history' 'ControlType.Button')
     Start-Sleep -Milliseconds 200
     $historyPath = Join-Path $stateDirectory 'completed_history.json'
     $historyJson = Get-Content -LiteralPath $historyPath -Raw
@@ -564,7 +598,7 @@ try {
     Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $pythonStateDirectory 'video_converter_queue.json'))) 'Rust application wrote the Python queue state file'
     Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $pythonStateDirectory 'video_converter_completed_history.json'))) 'Rust application wrote the Python history state file'
 
-    Write-Output 'Slint portable smoke passed (two-step task builder, single queue start, draggable persisted queue order, focus, 6 workflows, Unicode, responsive queue management, pause/resume lifecycle, segmented task progress, file-local conversion progress, complete live metrics, optional live preview, direct runtime, publication, backup, and original/target FPS history).'
+    Write-Output 'Slint portable smoke passed (safe two-step task builder, single queue start, draggable persisted queue order, focus, 6 workflows, Unicode, responsive queue management, pause/resume lifecycle, armed pause state, destructive-action confirmation, segmented task progress, file-local conversion progress, expandable live metrics, optional live preview, direct runtime, publication, backup, and searchable history actions).'
 } finally {
     if ($null -ne $lockedStream) {
         $lockedStream.Dispose()

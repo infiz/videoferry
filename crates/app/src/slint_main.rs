@@ -44,6 +44,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let timer_snapshot = Rc::clone(&last_snapshot);
     let next_status_refresh = Rc::new(RefCell::new(Instant::now()));
     let timer_status_refresh = Rc::clone(&next_status_refresh);
+    let last_completion_notification = Rc::new(RefCell::new(String::new()));
+    let timer_completion_notification = Rc::clone(&last_completion_notification);
     timer.start(TimerMode::Repeated, CONTROLLER_POLL_INTERVAL, move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
@@ -68,6 +70,15 @@ fn main() -> Result<(), slint::PlatformError> {
             snapshot.progress = displayed.progress;
             snapshot.live_status.clone_from(&displayed.live_status);
         }
+        {
+            let mut last_notification = timer_completion_notification.borrow_mut();
+            if snapshot.completion_notice.is_empty() {
+                last_notification.clear();
+            } else if *last_notification != snapshot.completion_notice {
+                show_completion_notification(&snapshot.completion_notice);
+                last_notification.clone_from(&snapshot.completion_notice);
+            }
+        }
         if snapshot != *timer_snapshot.borrow() {
             refresh(&ui, &snapshot);
             *timer_snapshot.borrow_mut() = snapshot;
@@ -81,6 +92,14 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.run()
+}
+
+fn show_completion_notification(message: &str) {
+    let _result = notify_rust::Notification::new()
+        .appname("VideoFerry")
+        .summary("VideoFerry finished")
+        .body(message)
+        .show();
 }
 
 fn wire_native_file_drop(ui: &AppWindow, controller: &Rc<RefCell<SlintController>>) {
@@ -257,6 +276,42 @@ fn wire_queue_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintController>
     let clear_history_controller = Rc::clone(controller);
     ui.on_clear_history(move || clear_history_controller.borrow_mut().clear_history());
 
+    let open_history_controller = Rc::clone(controller);
+    ui.on_open_history_item(move |path| {
+        open_history_controller
+            .borrow_mut()
+            .open_history_item(path.as_str());
+    });
+
+    let reveal_history_controller = Rc::clone(controller);
+    ui.on_reveal_history_item(move |path| {
+        reveal_history_controller
+            .borrow_mut()
+            .reveal_history_item(path.as_str());
+    });
+
+    let copy_controller = Rc::clone(controller);
+    ui.on_copy_text(move |value| {
+        let result = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(value.to_string()));
+        copy_controller.borrow_mut().report_clipboard_result(
+            "text",
+            result.as_ref().err().map(ToString::to_string).as_deref(),
+        );
+    });
+
+    let filter_controller = Rc::clone(controller);
+    ui.on_set_history_filter(move |filter| {
+        filter_controller
+            .borrow_mut()
+            .set_history_filter(filter.to_string());
+    });
+
+    let dismiss_controller = Rc::clone(controller);
+    ui.on_dismiss_completion(move || {
+        dismiss_controller.borrow_mut().dismiss_completion();
+    });
+
     let pause_controller = Rc::clone(controller);
     ui.on_toggle_pause(move || pause_controller.borrow_mut().toggle_pause());
 
@@ -361,8 +416,12 @@ fn wire_settings_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintControll
             .set_slideshow_collage(enabled);
     });
 
-    let speed_controller = Rc::clone(controller);
-    ui.on_cycle_speed(move || speed_controller.borrow_mut().cycle_speed());
+    let set_speed_controller = Rc::clone(controller);
+    ui.on_set_speed(move |index| {
+        if let Some(index) = valid_index(index) {
+            set_speed_controller.borrow_mut().set_speed(index);
+        }
+    });
 
     let sleep_controller = Rc::clone(controller);
     ui.on_set_prevent_sleep(move |enabled| {
@@ -432,6 +491,8 @@ fn task_item(task: &SlintTaskSnapshot) -> TaskItem {
         can_run: task.can_run,
         can_retry: task.can_retry,
         can_reorder: task.can_reorder,
+        has_error: !task.error_detail.is_empty(),
+        error_detail: SharedString::from(&task.error_detail),
     }
 }
 
@@ -442,6 +503,7 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
         .iter()
         .map(|item| HistoryItem {
             title: SharedString::from(&item.title),
+            path: SharedString::from(&item.path),
             subtitle: SharedString::from(&item.subtitle),
             detail: SharedString::from(&item.detail),
             configuration: SharedString::from(&item.configuration),
@@ -463,6 +525,8 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
     ui.set_quality(snapshot.settings.quality);
     ui.set_show_quality(snapshot.settings.show_quality);
     ui.set_speed(SharedString::from(&snapshot.settings.speed));
+    ui.set_speed_labels(model(strings(&snapshot.settings.speed_labels)));
+    ui.set_speed_index(i32::try_from(snapshot.settings.speed_index).unwrap_or_default());
     ui.set_show_speed(snapshot.settings.show_speed);
     ui.set_prevent_sleep(snapshot.settings.prevent_sleep);
     ui.set_trim_start(SharedString::from(&snapshot.settings.trim_start));
@@ -516,9 +580,14 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
     );
     ui.set_pending_count(i32::try_from(snapshot.pending_count).unwrap_or(i32::MAX));
     ui.set_completed_count(i32::try_from(snapshot.completed_count).unwrap_or(i32::MAX));
+    ui.set_attention_count(i32::try_from(snapshot.attention_count).unwrap_or(i32::MAX));
+    ui.set_history_total_count(i32::try_from(snapshot.history_total_count).unwrap_or(i32::MAX));
+    ui.set_pause_after_scheduled(snapshot.pause_after_current);
+    ui.set_completion_notice(SharedString::from(&snapshot.completion_notice));
     ui.set_selected_index(snapshot.selected_index);
     ui.set_task_draft_targets(model(strings(&snapshot.task_draft_targets)));
     ui.set_task_draft_summary(SharedString::from(&snapshot.task_draft_summary));
+    ui.set_task_draft_output_summary(SharedString::from(&snapshot.task_draft_output_summary));
 }
 
 fn strings(values: &[String]) -> Vec<SharedString> {

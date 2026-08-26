@@ -18,6 +18,75 @@ use crate::remux::PartialOutput;
 use crate::stabilize::{self, StabilizationPlan};
 use crate::subtitle::SubtitleTranscoder;
 
+const PREVIEW_INTERVAL: Duration = Duration::from_secs(1);
+
+struct PreviewRenderer {
+    source_format: ffmpeg::format::Pixel,
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    scaler: ffmpeg::software::scaling::Context,
+    rgba: ffmpeg::frame::Video,
+}
+
+impl PreviewRenderer {
+    fn new(frame: &ffmpeg::frame::Video, width: u32, height: u32) -> Result<Self, EngineError> {
+        let source_format = frame.format();
+        let source_width = frame.width();
+        let source_height = frame.height();
+        let scaler = ffmpeg::software::scaling::Context::get(
+            source_format,
+            source_width,
+            source_height,
+            ffmpeg::format::Pixel::RGBA,
+            width,
+            height,
+            ffmpeg::software::scaling::Flags::BILINEAR,
+        )
+        .map_err(ffmpeg_failure)?;
+        Ok(Self {
+            source_format,
+            source_width,
+            source_height,
+            width,
+            height,
+            scaler,
+            rgba: ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, width, height),
+        })
+    }
+
+    fn matches(&self, frame: &ffmpeg::frame::Video, width: u32, height: u32) -> bool {
+        self.source_format == frame.format()
+            && self.source_width == frame.width()
+            && self.source_height == frame.height()
+            && self.width == width
+            && self.height == height
+    }
+
+    fn render(&mut self, frame: &ffmpeg::frame::Video) -> Result<ConversionPreview, EngineError> {
+        self.scaler
+            .run(frame, &mut self.rgba)
+            .map_err(ffmpeg_failure)?;
+        let row_bytes = usize::try_from(self.width)
+            .map_err(|error| EngineError::Unsupported(error.to_string()))?
+            .checked_mul(4)
+            .ok_or_else(|| EngineError::Unsupported("preview frame is too wide".to_owned()))?;
+        let rows = usize::try_from(self.height)
+            .map_err(|error| EngineError::Unsupported(error.to_string()))?;
+        let mut pixels = Vec::with_capacity(row_bytes.saturating_mul(rows));
+        for row in 0..rows {
+            let start = row.saturating_mul(self.rgba.stride(0));
+            pixels.extend_from_slice(&self.rgba.data(0)[start..start + row_bytes]);
+        }
+        Ok(ConversionPreview {
+            width: self.width,
+            height: self.height,
+            rgba: pixels.into(),
+        })
+    }
+}
+
 struct VideoTranscoder {
     decoder: ffmpeg::decoder::Video,
     encoder: ffmpeg::encoder::Video,
@@ -29,7 +98,8 @@ struct VideoTranscoder {
     output_index: usize,
     frames: u64,
     last_progress: Option<Duration>,
-    last_preview: Option<Duration>,
+    last_preview: Option<Instant>,
+    preview_renderer: Option<PreviewRenderer>,
     first_target_pts: Option<i64>,
     next_output_pts: i64,
     started_at: Instant,
@@ -398,6 +468,7 @@ impl VideoTranscoder {
             frames: 0,
             last_progress: None,
             last_preview: None,
+            preview_renderer: None,
             first_target_pts: None,
             next_output_pts: 0,
             started_at: Instant::now(),
@@ -420,7 +491,7 @@ impl VideoTranscoder {
                 Ok(()) => {
                     let timestamp = decoded.timestamp();
                     decoded.set_pts(timestamp);
-                    self.emit_preview(&decoded, timestamp, control, emit);
+                    self.emit_preview(&decoded, control, emit);
                     self.filter
                         .get("in")
                         .ok_or_else(|| {
@@ -442,27 +513,19 @@ impl VideoTranscoder {
     fn emit_preview(
         &mut self,
         frame: &ffmpeg::frame::Video,
-        timestamp: Option<i64>,
         control: &ConversionControl,
         emit: &mut dyn FnMut(ConversionEvent),
     ) {
         if !control.preview_enabled() {
             return;
         }
-        let Some(timestamp) = timestamp else {
-            return;
-        };
-        let micros = timestamp.rescale(self.input_time_base, ffmpeg::Rational(1, 1_000_000));
-        let media_time = Duration::from_micros(u64::try_from(micros.max(0)).unwrap_or(u64::MAX));
-        if self
-            .last_preview
-            .is_some_and(|last| media_time.saturating_sub(last) < Duration::from_secs(1))
-        {
+        let now = Instant::now();
+        if !preview_is_due(self.last_preview, now) {
             return;
         }
-        if let Ok(preview) = preview_frame(frame, 480, 270) {
+        if let Ok(preview) = preview_frame(frame, 480, 270, &mut self.preview_renderer) {
             emit(ConversionEvent::Preview(preview));
-            self.last_preview = Some(media_time);
+            self.last_preview = Some(now);
         }
     }
 
@@ -617,38 +680,24 @@ fn preview_frame(
     frame: &ffmpeg::frame::Video,
     maximum_width: u32,
     maximum_height: u32,
+    renderer: &mut Option<PreviewRenderer>,
 ) -> Result<ConversionPreview, EngineError> {
     let (width, height) =
         fitted_dimensions(frame.width(), frame.height(), maximum_width, maximum_height);
-    let mut rgba = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, width, height);
-    ffmpeg::software::scaling::Context::get(
-        frame.format(),
-        frame.width(),
-        frame.height(),
-        ffmpeg::format::Pixel::RGBA,
-        width,
-        height,
-        ffmpeg::software::scaling::Flags::BILINEAR,
-    )
-    .map_err(ffmpeg_failure)?
-    .run(frame, &mut rgba)
-    .map_err(ffmpeg_failure)?;
-    let row_bytes = usize::try_from(width)
-        .map_err(|error| EngineError::Unsupported(error.to_string()))?
-        .checked_mul(4)
-        .ok_or_else(|| EngineError::Unsupported("preview frame is too wide".to_owned()))?;
-    let rows =
-        usize::try_from(height).map_err(|error| EngineError::Unsupported(error.to_string()))?;
-    let mut pixels = Vec::with_capacity(row_bytes.saturating_mul(rows));
-    for row in 0..rows {
-        let start = row.saturating_mul(rgba.stride(0));
-        pixels.extend_from_slice(&rgba.data(0)[start..start + row_bytes]);
+    if renderer
+        .as_ref()
+        .is_none_or(|renderer| !renderer.matches(frame, width, height))
+    {
+        *renderer = Some(PreviewRenderer::new(frame, width, height)?);
     }
-    Ok(ConversionPreview {
-        width,
-        height,
-        rgba: pixels,
-    })
+    renderer
+        .as_mut()
+        .ok_or_else(|| EngineError::Unavailable("preview renderer is unavailable".to_owned()))?
+        .render(frame)
+}
+
+fn preview_is_due(last_preview: Option<Instant>, now: Instant) -> bool {
+    last_preview.is_none_or(|last| now.saturating_duration_since(last) >= PREVIEW_INTERVAL)
 }
 
 fn fitted_dimensions(
@@ -877,12 +926,13 @@ fn nominal_frame_rate(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
     use videoferry_core::{Encoder, QueueSettings};
 
     use super::{
         effective_color_range, ffmpeg_filter_path, fitted_dimensions, needs_hvc1_tag,
-        nominal_frame_rate, video_filter_chain,
+        nominal_frame_rate, preview_is_due, video_filter_chain,
     };
 
     #[test]
@@ -922,6 +972,14 @@ mod tests {
         assert_eq!(fitted_dimensions(1080, 1920, 480, 270), (151, 270));
         assert_eq!(fitted_dimensions(640, 480, 480, 270), (360, 270));
         assert_eq!(fitted_dimensions(0, 0, 480, 270), (1, 1));
+    }
+
+    #[test]
+    fn preview_cadence_uses_wall_clock_time() {
+        let now = Instant::now();
+        assert!(preview_is_due(None, now));
+        assert!(!preview_is_due(Some(now), now + Duration::from_millis(999)));
+        assert!(preview_is_due(Some(now), now + Duration::from_secs(1)));
     }
 
     #[test]

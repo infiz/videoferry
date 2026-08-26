@@ -27,12 +27,14 @@ default = []
 native-ffmpeg = ["videoferry-ffmpeg/native-ffmpeg"]
 
 [dependencies]
+arboard.workspace = true
 eframe.workspace = true
 videoferry-core.workspace = true
 videoferry-ffmpeg.workspace = true
 videoferry-presets.workspace = true
 jiff.workspace = true
 keepawake.workspace = true
+notify-rust.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true

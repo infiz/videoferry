@@ -1,0 +1,29 @@
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Check Rust formatting
+        entry: cargo
+        args: [fmt, --all, --, --check]
+        language: system
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: Check Rust with Clippy
+        entry: cargo
+        args:
+          - clippy
+          - --workspace
+          - --all-targets
+          - --locked
+          - --
+          - -D
+          - warnings
+        language: system
+        files: '(^|/)(Cargo\.(toml|lock)|rust-toolchain\.toml|\.cargo/config\.toml|.*\.rs)$'
+        pass_filenames: false
+        require_serial: true

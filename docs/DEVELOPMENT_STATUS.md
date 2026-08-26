@@ -336,6 +336,14 @@ its ignored `.local` diagnostics.
 Build the Apple Silicon application, ZIP, and DMG on macOS:
 
 ```bash
+./scripts/build_mac.sh
+```
+
+The top-level command builds the pinned FFmpeg SDK when it is not already
+present, then creates and verifies all three package formats. To run the
+underlying steps separately and include the extended runtime matrix, use:
+
+```bash
 bash packaging/macos/build-ffmpeg-sdk.sh
 bash packaging/macos/build.sh
 bash testing/macos-runtime.sh
@@ -345,7 +353,9 @@ The first script verifies the pinned FFmpeg source checksum and builds the
 shared Apple Silicon SDK with x264, x265, SVT-AV1, vid.stab, and VideoToolbox.
 The package build gathers the complete non-system dylib dependency closure,
 rewrites install names to `@rpath`, embeds required build/license records and
-LUTs under `Contents/Resources`, and verifies the app signature. It then runs
+LUTs under `Contents/Resources`, and verifies the app signature. Its DMG uses a
+custom Finder layout with the application on the left, a visual installation
+arrow, and the Applications link on the right. It then runs
 `packaging/macos/verify-package.sh` against the bundle, an extracted ZIP, and a
 mounted DMG. The verifier checks arm64-only binaries, the complete `@rpath`
 closure, plist identity/version/deployment target, signatures, required

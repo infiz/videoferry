@@ -170,6 +170,14 @@ mkdir -p "$mount_point"
 hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point" -quiet
 mounted=1
 verify_bundle "$mount_point/VideoFerry.app" "disk image"
+if [[ ! -L "$mount_point/Applications" || "$(readlink "$mount_point/Applications")" != "/Applications" ]]; then
+    echo "Disk image is missing the drag-to-install Applications link." >&2
+    exit 1
+fi
+if [[ ! -f "$mount_point/.background/dmg-background.png" || ! -f "$mount_point/.DS_Store" ]]; then
+    echo "Disk image is missing its custom Finder installation layout." >&2
+    exit 1
+fi
 hdiutil detach "$mount_point" -quiet
 mounted=0
 

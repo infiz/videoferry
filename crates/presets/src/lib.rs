@@ -238,6 +238,18 @@ mod tests {
     }
 
     #[test]
+    fn nvidia_encoders_default_to_the_medium_p4_preset() {
+        for encoder in [Encoder::H264Nvenc, Encoder::HevcNvenc, Encoder::Av1Nvenc] {
+            assert_eq!(
+                default_settings(ContentMode::Tv, encoder)
+                    .speed_preset
+                    .as_deref(),
+                Some("p4")
+            );
+        }
+    }
+
+    #[test]
     fn detects_the_current_dji_lut_markers_case_insensitively() {
         let mut metadata = BTreeMap::new();
         metadata.insert("ENCODER".to_owned(), "DJI Osmo Pocket 3".to_owned());

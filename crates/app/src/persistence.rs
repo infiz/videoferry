@@ -23,6 +23,15 @@ const QUEUE_STATE_VERSION: u32 = 2;
 const LEGACY_HISTORY_COLUMN_COUNT: usize = 14;
 const HISTORY_COLUMN_COUNT: usize = 19;
 
+fn normalized_quality(encoder: Encoder, quality: f32) -> f32 {
+    let maximum = if matches!(encoder, Encoder::X264 | Encoder::X265) {
+        51.0
+    } else {
+        63.0
+    };
+    quality.round().clamp(0.0, maximum)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletedHistoryRow([String; HISTORY_COLUMN_COUNT]);
 
@@ -617,9 +626,9 @@ impl From<&QueueSettings> for StoredSettings {
             fps_raw,
             target_fps,
             share_lowest_fps,
-            quality_crf: settings
-                .quality
-                .map_or_else(String::new, |value| value.to_string()),
+            quality_crf: settings.quality.map_or_else(String::new, |value| {
+                normalized_quality(settings.encoder, value).to_string()
+            }),
             quality_preset: settings.speed_preset.clone().unwrap_or_default(),
             stabilize_strength: settings.stabilize_strength.clone(),
             trim_start: settings
@@ -677,7 +686,8 @@ impl StoredSettings {
             .quality_crf
             .parse::<f32>()
             .ok()
-            .filter(|value| value.is_finite());
+            .filter(|value| value.is_finite())
+            .map(|value| normalized_quality(encoder, value));
         settings.speed_preset = (!self.quality_preset.is_empty()).then_some(self.quality_preset);
         if !self.stabilize_strength.is_empty() {
             settings.stabilize_strength = self.stabilize_strength;
@@ -828,7 +838,7 @@ mod tests {
             mode: ContentMode::PhotoSlideshow,
             encoder: Encoder::SvtAv1,
             fps: FpsPolicy::Exact(23.976),
-            quality: Some(31.5),
+            quality: Some(32.0),
             speed_preset: Some("6".to_owned()),
             stabilize_strength: "Strong".to_owned(),
             trim_start: Some(std::time::Duration::from_secs(65)),
@@ -911,6 +921,18 @@ mod tests {
         )
         .unwrap();
         assert!(value.get("selected_mode").is_none());
+    }
+
+    #[test]
+    fn stored_decimal_quality_is_rounded_to_a_supported_integer() {
+        let stored = StoredSettings {
+            mode: "TV".to_owned(),
+            encoder: "x265".to_owned(),
+            quality_crf: "31.5".to_owned(),
+            ..StoredSettings::default()
+        };
+
+        assert_eq!(stored.into_settings().unwrap().quality, Some(32.0));
     }
 
     #[test]

@@ -20,18 +20,51 @@ const COMPLETED_HISTORY_FILE: &str = "completed_history.json";
 const COMPLETED_HISTORY_LOCK_FILE: &str = "completed_history.lock";
 const QUEUE_STATE_VERSION: u32 = 2;
 
+const LEGACY_HISTORY_COLUMN_COUNT: usize = 14;
+const HISTORY_COLUMN_COUNT: usize = 19;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompletedHistoryRow([String; 14]);
+pub(crate) struct CompletedHistoryRow([String; HISTORY_COLUMN_COUNT]);
 
 impl CompletedHistoryRow {
     #[must_use]
-    pub fn new(columns: [String; 14]) -> Self {
+    pub fn new(columns: [String; HISTORY_COLUMN_COUNT]) -> Self {
         Self(columns)
     }
 
     #[must_use]
-    pub fn columns(&self) -> &[String; 14] {
+    pub fn columns(&self) -> &[String; HISTORY_COLUMN_COUNT] {
         &self.0
+    }
+
+    #[must_use]
+    pub fn display_columns(&self) -> &[String] {
+        &self.0[..LEGACY_HISTORY_COLUMN_COUNT]
+    }
+
+    #[must_use]
+    pub fn task_id(&self) -> Option<&str> {
+        history_value(&self.0[14])
+    }
+
+    #[must_use]
+    pub fn input_path(&self) -> Option<&str> {
+        history_value(&self.0[15])
+    }
+
+    #[must_use]
+    pub fn original_codec(&self) -> Option<&str> {
+        history_value(&self.0[16])
+    }
+
+    #[must_use]
+    pub fn converted_codec(&self) -> Option<&str> {
+        history_value(&self.0[17])
+    }
+
+    #[must_use]
+    pub fn duration(&self) -> Option<&str> {
+        history_value(&self.0[18])
     }
 
     fn key(&self) -> String {
@@ -387,7 +420,13 @@ impl StateStore {
 fn normalize_history_row(row: &[serde_json::Value]) -> Option<CompletedHistoryRow> {
     let mut normalized = row.iter().map(python_string).collect::<Vec<_>>();
     match normalized.len() {
-        14 => {}
+        HISTORY_COLUMN_COUNT => {}
+        LEGACY_HISTORY_COLUMN_COUNT => {
+            normalized.extend(std::iter::repeat_n(
+                "-".to_owned(),
+                HISTORY_COLUMN_COUNT - LEGACY_HISTORY_COLUMN_COUNT,
+            ));
+        }
         11 => normalized.extend(["-".to_owned(), "-".to_owned(), "-".to_owned()]),
         10 => normalized.insert(2, "-".to_owned()),
         9 => {
@@ -404,12 +443,22 @@ fn normalize_history_row(row: &[serde_json::Value]) -> Option<CompletedHistoryRo
     if normalized.len() == 11 {
         normalized.extend(["-".to_owned(), "-".to_owned(), "-".to_owned()]);
     }
+    if normalized.len() == LEGACY_HISTORY_COLUMN_COUNT {
+        normalized.extend(std::iter::repeat_n(
+            "-".to_owned(),
+            HISTORY_COLUMN_COUNT - LEGACY_HISTORY_COLUMN_COUNT,
+        ));
+    }
     normalized
         .into_iter()
         .collect::<Vec<_>>()
         .try_into()
         .ok()
         .map(CompletedHistoryRow)
+}
+
+fn history_value(value: &str) -> Option<&str> {
+    (!value.is_empty() && value != "-" && value != "None").then_some(value)
 }
 
 fn python_string(value: &serde_json::Value) -> String {
@@ -825,6 +874,11 @@ mod tests {
             "x265".to_owned(),
             "28".to_owned(),
             "medium".to_owned(),
+            "task-1".to_owned(),
+            "source.mkv".to_owned(),
+            "h264".to_owned(),
+            "hevc".to_owned(),
+            "42:00".to_owned(),
         ])
     }
 
@@ -1109,7 +1163,8 @@ mod tests {
         assert_eq!(restored[2].columns()[8], "-");
         assert_eq!(restored[3].columns()[1], "-");
         assert_eq!(restored[3].columns()[8], "-");
-        assert_eq!(&restored[0].columns()[11..], ["-", "-", "-"]);
+        assert_eq!(&restored[0].columns()[11..14], ["-", "-", "-"]);
+        assert_eq!(&restored[0].columns()[14..], ["-", "-", "-", "-", "-"]);
     }
 
     #[test]

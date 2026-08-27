@@ -17,8 +17,8 @@ use platform_indicator::PlatformIndicator;
 use videoferry_core::{
     Container, ContentMode, ControlDecision, ConversionControl, ConversionEvent, ConversionPreview,
     ConversionProgress, ConversionRequest, Encoder, EngineError, FpsPolicy, MediaEngine, MediaInfo,
-    Queue, QueueSettings, QueueStatus, QueueTask, build_stream_plan, conversion_output_path,
-    stabilized_output_path, trim_output_path,
+    Queue, QueueSettings, QueueStatus, QueueTask, StreamKind, build_stream_plan,
+    conversion_output_path, stabilized_output_path, trim_output_path,
 };
 #[cfg(any(feature = "native-ffmpeg", test))]
 use videoferry_presets::dji_camera_profile;
@@ -334,7 +334,11 @@ enum FpsUiMode {
 enum QueueRunState {
     Idle,
     Running,
+    RunningSelected,
     PauseAfterCurrent,
+    PauseAfterCurrentSelected,
+    PausedBetweenFiles,
+    PausedBetweenFilesSelected,
     Stopping,
 }
 
@@ -402,11 +406,12 @@ enum WorkerUpdate {
 }
 
 enum WorkerJobOutcome {
-    Converted(CompletedJob),
+    Converted(Box<CompletedJob>),
     Skipped { reason: String },
 }
 
 struct CompletedJob {
+    input: PathBuf,
     output: PathBuf,
     lut_name: Option<String>,
     start_time: String,
@@ -422,6 +427,8 @@ struct HistoryMediaInfo {
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<f64>,
+    codec: Option<String>,
+    duration: Option<Duration>,
 }
 
 #[derive(Clone, Default)]
@@ -1019,7 +1026,9 @@ impl ConverterApp {
             ui.separator();
             if ui
                 .add_enabled(
-                    self.worker.is_none() && self.queue.next_pending_id().is_some(),
+                    self.worker.is_none()
+                        && self.queue_run_state == QueueRunState::Idle
+                        && self.queue.next_pending_id().is_some(),
                     egui::Button::new("Run queue"),
                 )
                 .clicked()
@@ -1028,12 +1037,14 @@ impl ConverterApp {
             }
             if ui
                 .add_enabled(
-                    selected_is_pending && self.worker.is_none(),
+                    selected_is_pending
+                        && self.worker.is_none()
+                        && self.queue_run_state == QueueRunState::Idle,
                     egui::Button::new("Run selected"),
                 )
                 .clicked()
             {
-                self.queue_run_state = QueueRunState::Idle;
+                self.queue_run_state = QueueRunState::RunningSelected;
                 let _ = self.start_selected(ui.ctx());
             }
             self.show_worker_controls(ui);
@@ -1074,7 +1085,10 @@ impl ConverterApp {
             self.rerun_selected();
         }
         if ui
-            .add_enabled(self.worker.is_none(), egui::Button::new("Clear queue"))
+            .add_enabled(
+                self.worker.is_none() && self.queue_run_state == QueueRunState::Idle,
+                egui::Button::new("Clear queue"),
+            )
             .clicked()
         {
             self.clear_queue();
@@ -1082,6 +1096,9 @@ impl ConverterApp {
     }
 
     fn show_worker_controls(&mut self, ui: &mut egui::Ui) {
+        if self.show_paused_between_files_controls(ui) {
+            return;
+        }
         let mut worker_status = None;
         let mut stop_current = false;
         let mut stop_all = false;
@@ -1107,15 +1124,43 @@ impl ConverterApp {
                     },
                 ));
             }
+            let pause_scheduled = matches!(
+                self.queue_run_state,
+                QueueRunState::PauseAfterCurrent | QueueRunState::PauseAfterCurrentSelected
+            );
             if ui
                 .add_enabled(
-                    self.queue_run_state == QueueRunState::Running,
-                    egui::Button::new("Pause after current"),
+                    matches!(
+                        self.queue_run_state,
+                        QueueRunState::Running
+                            | QueueRunState::RunningSelected
+                            | QueueRunState::PauseAfterCurrent
+                            | QueueRunState::PauseAfterCurrentSelected
+                    ),
+                    egui::Button::new(if pause_scheduled {
+                        "✓ Pause scheduled"
+                    } else {
+                        "Pause after this file"
+                    })
+                    .selected(pause_scheduled),
                 )
                 .clicked()
             {
-                self.queue_run_state = QueueRunState::PauseAfterCurrent;
-                "Queue will pause after the current item".clone_into(&mut self.activity);
+                if pause_scheduled {
+                    self.queue_run_state = match self.queue_run_state {
+                        QueueRunState::PauseAfterCurrentSelected => QueueRunState::RunningSelected,
+                        _ => QueueRunState::Running,
+                    };
+                    "Scheduled pause cancelled".clone_into(&mut self.activity);
+                } else {
+                    self.queue_run_state = if self.queue_run_state == QueueRunState::RunningSelected
+                    {
+                        QueueRunState::PauseAfterCurrentSelected
+                    } else {
+                        QueueRunState::PauseAfterCurrent
+                    };
+                    "Queue will pause after the current item".clone_into(&mut self.activity);
+                }
             }
             if ui.button("Stop current").clicked() {
                 worker.control.stop_current();
@@ -1139,6 +1184,35 @@ impl ConverterApp {
             "Stopping the current item; queued work will continue".clone_into(&mut self.activity);
             self.persist_queue();
         }
+    }
+
+    fn show_paused_between_files_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        if !matches!(
+            self.queue_run_state,
+            QueueRunState::PausedBetweenFiles | QueueRunState::PausedBetweenFilesSelected
+        ) {
+            return false;
+        }
+        if ui.add(egui::Button::new("Resume").selected(true)).clicked() {
+            if self.queue_run_state == QueueRunState::PausedBetweenFilesSelected {
+                self.queue_run_state = QueueRunState::RunningSelected;
+                "Task resumed".clone_into(&mut self.activity);
+                self.persist_queue();
+                let _ = self.start_selected(ui.ctx());
+            } else {
+                self.queue_run_state = QueueRunState::Running;
+                "Queue resumed".clone_into(&mut self.activity);
+                self.persist_queue();
+                self.start_next_pending(ui.ctx());
+            }
+        }
+        ui.add_enabled(false, egui::Button::new("Pause after this file"));
+        if ui.button("Stop all").clicked() {
+            self.queue_run_state = QueueRunState::Idle;
+            "Queue stopped; queued files remain".clone_into(&mut self.activity);
+            self.persist_queue();
+        }
+        true
     }
 
     fn show_settings(&mut self, ui: &mut egui::Ui) {
@@ -2918,9 +2992,54 @@ impl ConverterApp {
             task.status
         ));
         self.show_task_targets(ui, &id, &task, settings_editable);
+        self.show_selected_task_files(ui, &task);
         if let Some(error) = &task.error {
             ui.colored_label(egui::Color32::RED, error);
         }
+    }
+
+    fn show_selected_task_files(&self, ui: &mut egui::Ui, task: &QueueTask) {
+        ui.strong("Files");
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::Grid::new("selected-task-files-grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    for heading in [
+                        "File",
+                        "Status",
+                        "Started",
+                        "Completed",
+                        "Conversion time",
+                        "Original size",
+                        "New size",
+                        "Original FPS",
+                        "New FPS",
+                        "Codec",
+                        "Duration",
+                    ] {
+                        ui.strong(heading);
+                    }
+                    ui.end_row();
+                    for file in selected_task_files(task, &self.completed_history) {
+                        for value in [
+                            file.path,
+                            file.status,
+                            file.started_time,
+                            file.completed_time,
+                            file.conversion_time,
+                            file.original_size,
+                            file.new_size,
+                            file.original_fps,
+                            file.new_fps,
+                            file.codec,
+                            file.duration,
+                        ] {
+                            ui.label(value);
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
     }
 
     fn show_task_targets(&mut self, ui: &mut egui::Ui, id: &str, task: &QueueTask, editable: bool) {
@@ -3257,7 +3376,7 @@ impl ConverterApp {
                     }
                     ui.end_row();
                     for row in &self.completed_history {
-                        for value in row.columns() {
+                        for value in row.display_columns() {
                             ui.label(value);
                         }
                         ui.end_row();
@@ -3521,7 +3640,7 @@ impl ConverterApp {
             }
         };
         if matches!(encoder, Encoder::X264 | Encoder::X265 | Encoder::SvtAv1) {
-            settings.quality = Some(self.quality_crf.clamp(0.0, 63.0));
+            settings.quality = Some(self.quality_crf.clamp(0.0, quality_maximum(encoder)));
             settings.speed_preset = Some(self.speed_preset.clone());
         } else if encoder.is_nvenc() {
             settings.quality = None;
@@ -3971,12 +4090,21 @@ impl ConverterApp {
             self.active_source_info = None;
             self.active_stream_info = None;
             self.active_camera_info = CameraRunInfo::default();
-            let should_pause_queue = self.queue_run_state == QueueRunState::PauseAfterCurrent;
-            if should_pause_queue {
-                self.queue_run_state = QueueRunState::Idle;
-                "Queue paused after the current item".clone_into(&mut self.activity);
-            } else if self.queue_run_state == QueueRunState::Stopping {
-                self.queue_run_state = QueueRunState::Idle;
+            match self.queue_run_state {
+                QueueRunState::PauseAfterCurrent
+                    if continue_task || self.queue.next_pending_id().is_some() =>
+                {
+                    self.queue_run_state = QueueRunState::PausedBetweenFiles;
+                    "Queue paused after the current item".clone_into(&mut self.activity);
+                }
+                QueueRunState::PauseAfterCurrentSelected if continue_task => {
+                    self.queue_run_state = QueueRunState::PausedBetweenFilesSelected;
+                    "Queue paused after the current item".clone_into(&mut self.activity);
+                }
+                QueueRunState::PauseAfterCurrent
+                | QueueRunState::PauseAfterCurrentSelected
+                | QueueRunState::Stopping => self.queue_run_state = QueueRunState::Idle,
+                _ => {}
             }
             if let Some(task) = self
                 .queue
@@ -3994,7 +4122,11 @@ impl ConverterApp {
             if continue_task
                 && !matches!(
                     self.queue_run_state,
-                    QueueRunState::PauseAfterCurrent | QueueRunState::Stopping
+                    QueueRunState::PauseAfterCurrent
+                        | QueueRunState::PauseAfterCurrentSelected
+                        | QueueRunState::PausedBetweenFiles
+                        | QueueRunState::PausedBetweenFilesSelected
+                        | QueueRunState::Stopping
                 )
             {
                 self.select_only(Some(task_id));
@@ -4004,6 +4136,9 @@ impl ConverterApp {
             }
             if self.queue_run_state == QueueRunState::Running {
                 self.start_next_pending(context);
+            } else if self.queue_run_state == QueueRunState::RunningSelected {
+                self.queue_run_state = QueueRunState::Idle;
+                self.persist_queue();
             }
         }
     }
@@ -4265,6 +4400,22 @@ pub struct SlintTaskSnapshot {
     pub error_detail: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlintTaskFileSnapshot {
+    pub title: String,
+    pub path: String,
+    pub status: String,
+    pub started_time: String,
+    pub completed_time: String,
+    pub conversion_time: String,
+    pub original_size: String,
+    pub new_size: String,
+    pub original_fps: String,
+    pub new_fps: String,
+    pub codec: String,
+    pub duration: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlintHistorySnapshot {
     pub title: String,
@@ -4308,6 +4459,9 @@ pub struct SlintSettingsSnapshot {
     pub show_explicit_fps: bool,
     pub quality: f32,
     pub show_quality: bool,
+    pub quality_level: String,
+    pub quality_guide_labels: Vec<String>,
+    pub quality_maximum: f32,
     pub speed: String,
     pub speed_labels: Vec<String>,
     pub speed_index: usize,
@@ -4329,6 +4483,8 @@ pub struct SlintSettingsSnapshot {
 #[allow(clippy::struct_excessive_bools)]
 pub struct SlintAppSnapshot {
     pub tasks: Vec<SlintTaskSnapshot>,
+    pub selected_task_title: String,
+    pub selected_task_files: Vec<SlintTaskFileSnapshot>,
     pub history: Vec<SlintHistorySnapshot>,
     pub settings: SlintSettingsSnapshot,
     pub activity: String,
@@ -4339,6 +4495,7 @@ pub struct SlintAppSnapshot {
     pub progress: f32,
     pub is_running: bool,
     pub is_paused: bool,
+    pub paused_between_files: bool,
     pub pending_count: usize,
     pub completed_count: usize,
     pub attention_count: usize,
@@ -4352,6 +4509,444 @@ pub struct SlintAppSnapshot {
     pub task_draft_targets: Vec<String>,
     pub task_draft_summary: String,
     pub task_draft_output_summary: String,
+}
+
+fn task_file_title(path: &str) -> String {
+    std::path::Path::new(path).file_name().map_or_else(
+        || path.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn unavailable_task_file(path: &std::path::Path, status: &str) -> SlintTaskFileSnapshot {
+    let path = path.display().to_string();
+    SlintTaskFileSnapshot {
+        title: task_file_title(&path),
+        path,
+        status: status.to_owned(),
+        started_time: "-".to_owned(),
+        completed_time: "-".to_owned(),
+        conversion_time: "-".to_owned(),
+        original_size: "-".to_owned(),
+        new_size: "-".to_owned(),
+        original_fps: "-".to_owned(),
+        new_fps: "-".to_owned(),
+        codec: "-".to_owned(),
+        duration: "-".to_owned(),
+    }
+}
+
+fn completed_task_file(row: &CompletedHistoryRow) -> SlintTaskFileSnapshot {
+    let columns = row.columns();
+    let path = row.input_path().unwrap_or(&columns[0]).to_owned();
+    let codec = match (row.original_codec(), row.converted_codec()) {
+        (Some(original), Some(converted)) if original != converted => {
+            format!("{original} → {converted}")
+        }
+        (_, Some(converted)) => converted.to_owned(),
+        (Some(original), None) => original.to_owned(),
+        (None, None) => columns[11].clone(),
+    };
+    SlintTaskFileSnapshot {
+        title: task_file_title(&path),
+        path,
+        status: "Completed".to_owned(),
+        started_time: columns[3].clone(),
+        completed_time: columns[4].clone(),
+        conversion_time: if columns[5] == "-" {
+            "-".to_owned()
+        } else {
+            format!("{} min", columns[5])
+        },
+        original_size: columns[6].clone(),
+        new_size: columns[7].clone(),
+        original_fps: columns[9].clone(),
+        new_fps: columns[10].clone(),
+        codec,
+        duration: row.duration().unwrap_or("-").to_owned(),
+    }
+}
+
+fn path_components_lowercase(path: &std::path::Path) -> Vec<String> {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .collect()
+}
+
+fn path_is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = path_components_lowercase(path);
+    let root = path_components_lowercase(root);
+    path.starts_with(&root)
+}
+
+fn history_path_matches_target(path: &std::path::Path, target: &std::path::Path) -> bool {
+    if target.is_dir() || !has_video_filename(target) {
+        return path_is_within(path, target);
+    }
+    let path_parent = path.parent().map(path_components_lowercase);
+    let target_parent = target.parent().map(path_components_lowercase);
+    let path_stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase());
+    let target_stem = target
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase());
+    path_parent == target_parent && path_stem == target_stem
+}
+
+fn history_row_matches_task(row: &CompletedHistoryRow, task: &QueueTask) -> bool {
+    if let Some(task_id) = row.task_id() {
+        return task_id == task.id;
+    }
+    let columns = row.columns();
+    let expected_encoder = if task.settings.mode == ContentMode::Trim {
+        "Stream copy"
+    } else {
+        task.settings.encoder.user_name()
+    };
+    if columns[1] != task.settings.mode.label() || columns[11] != expected_encoder {
+        return false;
+    }
+    let history_path = std::path::Path::new(row.input_path().unwrap_or(&columns[0]));
+    task.source_root
+        .iter()
+        .chain(&task.targets)
+        .any(|target| history_path_matches_target(history_path, target))
+}
+
+fn completed_directory_video_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|value| value.to_str());
+                if !matches!(name, Some("original" | "chs")) {
+                    pending.push(path);
+                }
+            } else if is_video_path(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn folder_task_detail_files(
+    root: &std::path::Path,
+    settings: &QueueSettings,
+) -> Vec<(PathBuf, bool)> {
+    if !root.is_dir() {
+        return renamed_conversion_directory(root, settings).map_or_else(Vec::new, |renamed| {
+            completed_directory_video_files(&renamed)
+                .into_iter()
+                .map(|path| (path, true))
+                .collect()
+        });
+    }
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|value| value.to_str());
+                if name == Some("original") {
+                    continue;
+                }
+                if is_skipped_conversion_directory(&path) {
+                    if settings.mode != ContentMode::CameraVideos {
+                        files.extend(
+                            collect_all_video_files(&path)
+                                .into_iter()
+                                .map(|path| (path, true)),
+                        );
+                    }
+                } else {
+                    pending.push(path);
+                }
+            } else if is_video_path(&path) {
+                let completed = should_skip_queue_source(&path, settings);
+                files.push((path, completed));
+            }
+        }
+    }
+    files
+}
+
+fn task_detail_files(task: &QueueTask) -> Vec<(PathBuf, bool)> {
+    let mut files = task
+        .targets
+        .iter()
+        .flat_map(|target| {
+            if target.is_dir() || !has_video_filename(target) {
+                folder_task_detail_files(target, &task.settings)
+            } else {
+                vec![(
+                    target.clone(),
+                    task.status == QueueStatus::Completed
+                        || task.skipped_paths.contains(target)
+                        || should_skip_queue_source(target, &task.settings),
+                )]
+            }
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(path, _)| full_path_natural_key(path));
+    files
+}
+
+fn selected_task_files(
+    task: &QueueTask,
+    history: &[CompletedHistoryRow],
+) -> Vec<SlintTaskFileSnapshot> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for row in history
+        .iter()
+        .filter(|row| history_row_matches_task(row, task))
+    {
+        let file = completed_task_file(row);
+        seen.insert(file.path.to_lowercase());
+        files.push(file);
+    }
+
+    for path in &task.skipped_paths {
+        if seen.insert(path.display().to_string().to_lowercase()) {
+            files.push(unavailable_task_file(path, "Completed"));
+        }
+    }
+
+    if task.settings.mode != ContentMode::PhotoSlideshow {
+        for (path, completed) in task_detail_files(task) {
+            if seen.insert(path.display().to_string().to_lowercase()) {
+                let status = if completed || task.status == QueueStatus::Completed {
+                    "Completed"
+                } else {
+                    "Queued"
+                };
+                files.push(unavailable_task_file(&path, status));
+            }
+        }
+    }
+
+    for path in task
+        .targets
+        .iter()
+        .filter(|path| has_video_filename(path) || is_photo_path(path))
+    {
+        if seen.insert(path.display().to_string().to_lowercase()) {
+            let status = if task.status == QueueStatus::Completed {
+                "Completed"
+            } else {
+                "Queued"
+            };
+            files.push(unavailable_task_file(path, status));
+        }
+    }
+
+    if files.is_empty() {
+        for path in &task.targets {
+            if seen.insert(path.display().to_string().to_lowercase()) {
+                let status = if task.status == QueueStatus::Completed {
+                    "Completed"
+                } else {
+                    "Queued"
+                };
+                files.push(unavailable_task_file(path, status));
+            }
+        }
+    }
+    files.sort_by_key(|file| full_path_natural_key(std::path::Path::new(&file.path)));
+    files
+}
+
+fn quality_maximum(encoder: Encoder) -> f32 {
+    match encoder {
+        Encoder::X264 | Encoder::X265 => 51.0,
+        _ => 63.0,
+    }
+}
+
+fn quality_guidance(encoder: Encoder, quality: f32) -> (String, Vec<String>) {
+    let bands: &[(u8, u8, &str)] = match encoder {
+        Encoder::X264 => &[
+            (0, 17, "Max detail"),
+            (18, 22, "High detail"),
+            (23, 27, "Balanced"),
+            (28, 35, "Smaller file"),
+            (36, 51, "Smallest file"),
+        ],
+        Encoder::X265 => &[
+            (0, 17, "Max detail"),
+            (18, 25, "High detail"),
+            (26, 31, "Balanced"),
+            (32, 39, "Smaller file"),
+            (40, 51, "Smallest file"),
+        ],
+        Encoder::SvtAv1 => &[
+            (0, 23, "Max detail"),
+            (24, 31, "High detail"),
+            (32, 39, "Balanced"),
+            (40, 49, "Smaller file"),
+            (50, 63, "Smallest file"),
+        ],
+        _ => &[
+            (0, 17, "Max detail"),
+            (18, 27, "High detail"),
+            (28, 35, "Balanced"),
+            (36, 45, "Smaller file"),
+            (46, 63, "Smallest file"),
+        ],
+    };
+    let level = bands
+        .iter()
+        .find(|(_, end, _)| quality <= f32::from(*end))
+        .map_or("Smallest file", |(_, _, label)| *label)
+        .to_owned();
+    let labels = bands
+        .iter()
+        .map(|(start, end, label)| format!("{start}\u{2013}{end}\n{label}"))
+        .collect();
+    (level, labels)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+fn slint_settings_snapshot(
+    app: &ConverterApp,
+    task_settings: Option<&QueueSettings>,
+) -> SlintSettingsSnapshot {
+    let mode = task_settings.map_or(app.mode, |settings| settings.mode);
+    let encoder = task_settings.map_or(app.encoder, |settings| settings.encoder);
+    let fps_mode = task_settings.map_or(app.fps_mode, |settings| fps_ui_mode(settings.fps));
+    let explicit_fps =
+        task_settings.map_or(app.explicit_fps, |settings| explicit_fps(settings.fps));
+    let quality = task_settings
+        .and_then(|settings| settings.quality)
+        .unwrap_or(app.quality_crf);
+    let quality_maximum = quality_maximum(encoder);
+    let quality = quality.clamp(0.0, quality_maximum);
+    let (quality_level, quality_guide_labels) = quality_guidance(encoder, quality);
+    let speed = task_settings.map_or_else(
+        || app.speed_preset.clone(),
+        |settings| settings.speed_preset.clone().unwrap_or_default(),
+    );
+    let mut encoders = if mode == ContentMode::Trim {
+        vec![Encoder::X265]
+    } else {
+        app.available_encoders.clone()
+    };
+    if encoders.is_empty() {
+        encoders.push(Encoder::X265);
+    }
+    if !encoders.contains(&encoder) {
+        encoders.push(encoder);
+    }
+    let fps_modes = fps_modes_for(mode, encoder);
+    let speed_labels = speed_options(encoder);
+    let audio_paths = task_settings.map_or(app.slideshow_audio_paths.as_slice(), |settings| {
+        settings.slideshow_audio_paths.as_slice()
+    });
+    SlintSettingsSnapshot {
+        mode_index: ContentMode::ALL
+            .iter()
+            .position(|candidate| *candidate == mode)
+            .unwrap_or_default(),
+        mode_labels: ContentMode::ALL
+            .into_iter()
+            .map(|candidate| candidate.label().to_owned())
+            .collect(),
+        encoder_index: encoders
+            .iter()
+            .position(|candidate| *candidate == encoder)
+            .unwrap_or_default(),
+        encoder_labels: encoders
+            .into_iter()
+            .map(|candidate| candidate.user_name().to_owned())
+            .collect(),
+        show_encoder: workflow_shows_encoder(mode),
+        fps_index: fps_modes
+            .iter()
+            .position(|candidate| *candidate == fps_mode)
+            .unwrap_or_default(),
+        fps_labels: fps_modes
+            .into_iter()
+            .map(|candidate| candidate.label().to_owned())
+            .collect(),
+        show_fps: workflow_shows_fps(mode),
+        explicit_fps: explicit_fps as f32,
+        show_explicit_fps: fps_mode == FpsUiMode::Explicit,
+        quality,
+        show_quality: matches!(encoder, Encoder::X264 | Encoder::X265 | Encoder::SvtAv1)
+            && mode != ContentMode::Trim,
+        quality_level,
+        quality_guide_labels,
+        quality_maximum,
+        speed_index: speed_labels
+            .iter()
+            .position(|candidate| candidate == &speed)
+            .unwrap_or_default(),
+        speed,
+        speed_labels,
+        show_speed: (matches!(encoder, Encoder::X264 | Encoder::X265 | Encoder::SvtAv1)
+            || encoder.is_nvenc())
+            && mode != ContentMode::Trim,
+        prevent_sleep: app.sleep.enabled,
+        trim_start: task_settings.map_or_else(
+            || app.trim_start_text.clone(),
+            |settings| format_trim_time(settings.trim_start.unwrap_or_default()),
+        ),
+        trim_end: task_settings.map_or_else(
+            || app.trim_end_text.clone(),
+            |settings| format_trim_time(settings.trim_end.unwrap_or(Duration::from_secs(1))),
+        ),
+        apply_lut: task_settings.map_or(app.apply_lut, |settings| settings.apply_lut),
+        stabilize_index: ["Gentle", "Balanced", "Steady", "Strong", "Maximum"]
+            .iter()
+            .position(|strength| {
+                *strength
+                    == task_settings.map_or(app.stabilize_strength.as_str(), |settings| {
+                        settings.stabilize_strength.as_str()
+                    })
+            })
+            .unwrap_or(1),
+        slideshow_interval: task_settings.map_or(app.slideshow_interval_seconds, |settings| {
+            settings.photo_interval.as_secs_f32()
+        }),
+        slideshow_fps: i32::try_from(
+            task_settings.map_or(app.slideshow_fps, |settings| settings.slideshow_fps),
+        )
+        .unwrap_or(i32::MAX),
+        slideshow_resolution_index: usize::from(
+            task_settings.map_or(app.slideshow_resolution == "4K", |settings| {
+                settings.slideshow_resolution == (3840, 2160)
+            }),
+        ),
+        slideshow_collage: task_settings
+            .map_or(app.slideshow_collage, |settings| settings.slideshow_collage),
+        slideshow_audio_labels: audio_paths
+            .iter()
+            .map(|path| {
+                path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            })
+            .collect(),
+        slideshow_audio_selected: if task_settings.is_some() {
+            -1
+        } else {
+            app.slideshow_audio_selected
+                .and_then(|index| i32::try_from(index).ok())
+                .unwrap_or(-1)
+        },
+    }
 }
 
 impl SlintController {
@@ -4566,12 +5161,28 @@ impl SlintController {
 
     pub fn start_selected(&mut self) {
         if self.app.worker.is_none() {
-            self.app.queue_run_state = QueueRunState::Idle;
+            self.app.queue_run_state = QueueRunState::RunningSelected;
             self.app.start_selected(&self.context);
         }
     }
 
     pub fn toggle_pause(&mut self) {
+        if self.app.queue_run_state == QueueRunState::PausedBetweenFiles {
+            self.app.queue_run_state = QueueRunState::Running;
+            "Queue resumed".clone_into(&mut self.app.activity);
+            self.app.persist_queue();
+            self.app.start_next_pending(&self.context);
+            self.app.update_sleep_inhibitor();
+            return;
+        }
+        if self.app.queue_run_state == QueueRunState::PausedBetweenFilesSelected {
+            self.app.queue_run_state = QueueRunState::RunningSelected;
+            "Task resumed".clone_into(&mut self.app.activity);
+            self.app.persist_queue();
+            self.app.start_selected(&self.context);
+            self.app.update_sleep_inhibitor();
+            return;
+        }
         let Some(worker) = &mut self.app.worker else {
             return;
         };
@@ -4613,12 +5224,26 @@ impl SlintController {
         if self.app.worker.is_none() {
             return;
         }
-        if self.app.queue_run_state == QueueRunState::PauseAfterCurrent {
-            self.app.queue_run_state = QueueRunState::Running;
-            "Scheduled pause cancelled".clone_into(&mut self.app.activity);
-        } else if self.app.queue_run_state == QueueRunState::Running {
-            self.app.queue_run_state = QueueRunState::PauseAfterCurrent;
-            "Queue will pause after this video".clone_into(&mut self.app.activity);
+        match self.app.queue_run_state {
+            QueueRunState::PauseAfterCurrent => {
+                self.app.queue_run_state = QueueRunState::Running;
+                "Scheduled pause cancelled".clone_into(&mut self.app.activity);
+            }
+            QueueRunState::PauseAfterCurrentSelected => {
+                self.app.queue_run_state = QueueRunState::RunningSelected;
+                "Scheduled pause cancelled".clone_into(&mut self.app.activity);
+            }
+            QueueRunState::Running => {
+                self.app.queue_run_state = QueueRunState::PauseAfterCurrent;
+                "Queue will pause after this video".clone_into(&mut self.app.activity);
+            }
+            QueueRunState::RunningSelected | QueueRunState::Idle => {
+                self.app.queue_run_state = QueueRunState::PauseAfterCurrentSelected;
+                "Task will pause after this video".clone_into(&mut self.app.activity);
+            }
+            QueueRunState::PausedBetweenFiles
+            | QueueRunState::PausedBetweenFilesSelected
+            | QueueRunState::Stopping => {}
         }
         self.app.persist_queue();
     }
@@ -4633,6 +5258,15 @@ impl SlintController {
     }
 
     pub fn stop_all(&mut self) {
+        if matches!(
+            self.app.queue_run_state,
+            QueueRunState::PausedBetweenFiles | QueueRunState::PausedBetweenFilesSelected
+        ) {
+            self.app.queue_run_state = QueueRunState::Idle;
+            "Queue stopped; queued files remain".clone_into(&mut self.app.activity);
+            self.app.persist_queue();
+            return;
+        }
         if let Some(worker) = &self.app.worker {
             worker.control.stop_all();
             self.app.queue_run_state = QueueRunState::Stopping;
@@ -4760,7 +5394,7 @@ impl SlintController {
     }
 
     pub fn set_quality(&mut self, quality: f32) {
-        self.app.quality_crf = quality.clamp(0.0, 63.0);
+        self.app.quality_crf = quality.clamp(0.0, quality_maximum(self.app.encoder));
         self.app.sync_preferences();
     }
 
@@ -4909,6 +5543,10 @@ impl SlintController {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     pub fn snapshot(&self) -> SlintAppSnapshot {
+        let paused_between_files = matches!(
+            self.app.queue_run_state,
+            QueueRunState::PausedBetweenFiles | QueueRunState::PausedBetweenFilesSelected
+        );
         let active_id = self
             .app
             .worker
@@ -5041,11 +5679,6 @@ impl SlintController {
                 }
             })
             .collect::<Vec<_>>();
-        let encoders = self.app.allowed_encoders();
-        let encoder_index = encoders
-            .iter()
-            .position(|encoder| *encoder == self.app.encoder)
-            .unwrap_or_default();
         let selected_index = self
             .app
             .selected_id
@@ -5065,23 +5698,51 @@ impl SlintController {
                 .task(id)
                 .is_some_and(|task| task.status == QueueStatus::Pending)
         });
-        let active_title = self
+        let (selected_task_title, selected_task_files) = self
+            .app
+            .selected_id
+            .as_deref()
+            .and_then(|id| self.app.queue.task(id))
+            .map_or_else(
+                || (String::new(), Vec::new()),
+                |task| {
+                    (
+                        task.name.clone(),
+                        selected_task_files(task, &self.app.completed_history),
+                    )
+                },
+            );
+        let active_title = if paused_between_files {
+            "Queue paused".to_owned()
+        } else {
+            self.app
+                .worker
+                .as_ref()
+                .and_then(|worker| self.app.queue.task(&worker.task_id))
+                .map_or_else(|| "Ready when you are".to_owned(), |task| task.name.clone())
+        };
+        let active_detail = if paused_between_files {
+            "Current file completed. Resume to start the next queued file.".to_owned()
+        } else {
+            self.app.worker.as_ref().map_or_else(
+                || self.app.activity.clone(),
+                |worker| worker.target.display().to_string(),
+            )
+        };
+        let live_status = slint_live_status(&self.app);
+        let task_settings = self
             .app
             .worker
             .as_ref()
             .and_then(|worker| self.app.queue.task(&worker.task_id))
-            .map_or_else(|| "Ready when you are".to_owned(), |task| task.name.clone());
-        let active_detail = self.app.worker.as_ref().map_or_else(
-            || self.app.activity.clone(),
-            |worker| worker.target.display().to_string(),
-        );
-        let live_status = slint_live_status(&self.app);
-        let fps_modes = self.fps_modes();
-        let speed_labels = speed_options(self.app.encoder);
-        let speed_index = speed_labels
-            .iter()
-            .position(|speed| speed == &self.app.speed_preset)
-            .unwrap_or_default();
+            .or_else(|| {
+                paused_between_files
+                    .then_some(self.app.selected_id.as_deref())
+                    .flatten()
+                    .and_then(|id| self.app.queue.task(id))
+            })
+            .map(|task| &task.settings);
+        let settings = slint_settings_snapshot(&self.app, task_settings);
         let (task_draft_targets, task_draft_summary, task_draft_output_summary) =
             self.task_draft.as_ref().map_or_else(
                 || (Vec::new(), String::new(), String::new()),
@@ -5118,89 +5779,29 @@ impl SlintController {
                 .count(),
             attention_count,
             history_total_count: self.app.completed_history.len(),
-            pause_after_current: self.app.queue_run_state == QueueRunState::PauseAfterCurrent,
+            pause_after_current: matches!(
+                self.app.queue_run_state,
+                QueueRunState::PauseAfterCurrent | QueueRunState::PauseAfterCurrentSelected
+            ),
             completion_notice: self.app.completion_notice.clone(),
             tasks,
+            selected_task_title,
+            selected_task_files,
             history,
-            settings: SlintSettingsSnapshot {
-                mode_index: ContentMode::ALL
-                    .iter()
-                    .position(|mode| *mode == self.app.mode)
-                    .unwrap_or_default(),
-                mode_labels: ContentMode::ALL
-                    .into_iter()
-                    .map(|mode| mode.label().to_owned())
-                    .collect(),
-                encoder_index,
-                encoder_labels: encoders
-                    .into_iter()
-                    .map(|encoder| encoder.user_name().to_owned())
-                    .collect(),
-                show_encoder: workflow_shows_encoder(self.app.mode),
-                fps_index: fps_modes
-                    .iter()
-                    .position(|mode| *mode == self.app.fps_mode)
-                    .unwrap_or_default(),
-                fps_labels: fps_modes
-                    .into_iter()
-                    .map(|mode| mode.label().to_owned())
-                    .collect(),
-                show_fps: workflow_shows_fps(self.app.mode),
-                explicit_fps: self.app.explicit_fps as f32,
-                show_explicit_fps: self.app.fps_mode == FpsUiMode::Explicit,
-                quality: self.app.quality_crf,
-                show_quality: matches!(
-                    self.app.encoder,
-                    Encoder::X264 | Encoder::X265 | Encoder::SvtAv1
-                ) && self.app.mode != ContentMode::Trim,
-                speed: self.app.speed_preset.clone(),
-                speed_labels,
-                speed_index,
-                show_speed: (matches!(
-                    self.app.encoder,
-                    Encoder::X264 | Encoder::X265 | Encoder::SvtAv1
-                ) || self.app.encoder.is_nvenc())
-                    && self.app.mode != ContentMode::Trim,
-                prevent_sleep: self.app.sleep.enabled,
-                trim_start: self.app.trim_start_text.clone(),
-                trim_end: self.app.trim_end_text.clone(),
-                apply_lut: self.app.apply_lut,
-                stabilize_index: ["Gentle", "Balanced", "Steady", "Strong", "Maximum"]
-                    .iter()
-                    .position(|strength| *strength == self.app.stabilize_strength)
-                    .unwrap_or(1),
-                slideshow_interval: self.app.slideshow_interval_seconds,
-                slideshow_fps: i32::try_from(self.app.slideshow_fps).unwrap_or(i32::MAX),
-                slideshow_resolution_index: usize::from(self.app.slideshow_resolution == "4K"),
-                slideshow_collage: self.app.slideshow_collage,
-                slideshow_audio_labels: self
-                    .app
-                    .slideshow_audio_paths
-                    .iter()
-                    .map(|path| {
-                        path.file_name().map_or_else(
-                            || path.display().to_string(),
-                            |name| name.to_string_lossy().into_owned(),
-                        )
-                    })
-                    .collect(),
-                slideshow_audio_selected: self
-                    .app
-                    .slideshow_audio_selected
-                    .and_then(|index| i32::try_from(index).ok())
-                    .unwrap_or(-1),
-            },
+            settings,
             activity: self.app.activity.clone(),
             engine_status: self.app.engine_status.clone(),
             active_title,
             active_detail,
             live_status,
             progress: active_progress,
-            is_running: self.app.worker.is_some(),
-            is_paused: self.app.worker.as_ref().is_some_and(|worker| worker.paused),
+            is_running: self.app.worker.is_some() || paused_between_files,
+            is_paused: paused_between_files
+                || self.app.worker.as_ref().is_some_and(|worker| worker.paused),
+            paused_between_files,
             selected_index,
             selected_can_move,
-            preview_enabled: self.app.frame_preview_enabled,
+            preview_enabled: self.app.frame_preview_enabled && !paused_between_files,
             live_preview: self.app.live_preview.clone(),
             task_draft_targets,
             task_draft_summary,
@@ -5209,15 +5810,19 @@ impl SlintController {
     }
 
     fn fps_modes(&self) -> Vec<FpsUiMode> {
-        if descriptor(self.app.mode, self.app.encoder).share_lowest_fps {
-            vec![
-                FpsUiMode::SharedLowest,
-                FpsUiMode::Source,
-                FpsUiMode::Explicit,
-            ]
-        } else {
-            vec![FpsUiMode::Source, FpsUiMode::Explicit]
-        }
+        fps_modes_for(self.app.mode, self.app.encoder)
+    }
+}
+
+fn fps_modes_for(mode: ContentMode, encoder: Encoder) -> Vec<FpsUiMode> {
+    if descriptor(mode, encoder).share_lowest_fps {
+        vec![
+            FpsUiMode::SharedLowest,
+            FpsUiMode::Source,
+            FpsUiMode::Explicit,
+        ]
+    } else {
+        vec![FpsUiMode::Source, FpsUiMode::Explicit]
     }
 }
 
@@ -5504,7 +6109,8 @@ fn spawn_worker(
                 execute_job_with_retry(&worker_task_id, &request, &worker_control, &mut emit)?;
             Ok(match outcome {
                 JobExecution::Converted { output, lut_name } => {
-                    WorkerJobOutcome::Converted(CompletedJob {
+                    WorkerJobOutcome::Converted(Box::new(CompletedJob {
+                        input: request.input.clone(),
                         converted: history_media_info(&output),
                         output,
                         lut_name,
@@ -5512,7 +6118,7 @@ fn spawn_worker(
                         end_time: formatted_local_time(),
                         process_minutes: format!("{:.2}", started.elapsed().as_secs_f64() / 60.0),
                         original,
-                    })
+                    }))
                 }
                 JobExecution::Skipped { reason } => WorkerJobOutcome::Skipped { reason },
             })
@@ -6071,6 +6677,12 @@ impl From<&MediaInfo> for HistoryMediaInfo {
             width: info.width,
             height: info.height,
             fps: info.frame_rate,
+            codec: info
+                .streams
+                .iter()
+                .find(|stream| stream.kind == StreamKind::Video && !stream.is_attached_picture)
+                .and_then(|stream| stream.codec_name.clone()),
+            duration: info.duration,
         }
     }
 }
@@ -6144,6 +6756,17 @@ fn completed_history_row(task: &QueueTask, job: &CompletedJob) -> CompletedHisto
         encoder,
         quality,
         preset,
+        task.id.clone(),
+        job.input.display().to_string(),
+        job.original.codec.clone().unwrap_or_else(|| "-".to_owned()),
+        job.converted
+            .codec
+            .clone()
+            .unwrap_or_else(|| "-".to_owned()),
+        job.original
+            .duration
+            .or(job.converted.duration)
+            .map_or_else(|| "-".to_owned(), format_clock),
     ])
 }
 
@@ -7036,7 +7659,7 @@ fn collect_video_files(root: &std::path::Path) -> Vec<PathBuf> {
             }
         }
     }
-    files.sort_by_key(|path| slideshow_natural_key(path));
+    files.sort_by_key(|path| full_path_natural_key(path));
     files
 }
 
@@ -7064,7 +7687,7 @@ fn expanded_task_targets(
             !already_queued.contains(path) && !should_skip_queue_source(path, &task.settings)
         })
         .collect::<Vec<_>>();
-    files.sort_by_key(|path| slideshow_natural_key(path));
+    files.sort_by_key(|path| full_path_natural_key(path));
     files.dedup();
     files
         .into_iter()
@@ -7577,12 +8200,23 @@ fn slideshow_natural_key(path: &std::path::Path) -> Vec<SlideshowNaturalPart> {
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+        .unwrap_or_default();
+    let mut parts = natural_key(name);
+    parts.push(SlideshowNaturalPart::Text(
+        path.to_string_lossy().to_ascii_lowercase(),
+    ));
+    parts
+}
+
+fn full_path_natural_key(path: &std::path::Path) -> Vec<SlideshowNaturalPart> {
+    natural_key(&path.to_string_lossy())
+}
+
+fn natural_key(value: &str) -> Vec<SlideshowNaturalPart> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut digits = None;
-    for character in name.chars() {
+    for character in value.to_lowercase().chars() {
         let is_digit = character.is_ascii_digit();
         if digits.is_some_and(|value| value != is_digit) {
             parts.push(slideshow_natural_part(&current, digits.unwrap_or(false)));
@@ -7594,9 +8228,6 @@ fn slideshow_natural_key(path: &std::path::Path) -> Vec<SlideshowNaturalPart> {
     if !current.is_empty() {
         parts.push(slideshow_natural_part(&current, digits.unwrap_or(false)));
     }
-    parts.push(SlideshowNaturalPart::Text(
-        path.to_string_lossy().to_ascii_lowercase(),
-    ));
     parts
 }
 
@@ -7679,14 +8310,16 @@ mod tests {
     use videoferry_core::ProgressRatio;
 
     use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        CompletedJob, ConverterApp, EncodingUiSettings, FolderQueueSummary, FpsUiMode,
-        HistoryMediaInfo, ReviewPhotoTarget, ReviewSlideTarget, ReviewWorkerRequest,
-        SlintTaskDraft, StreamCarryInfo, TaskDisplayCounts, WatchedFolder, active_item_position,
-        camera_run_info_from_media, cleanup_temporary_directory, collect_new_video_task_targets,
-        collect_video_files, completed_history_row, default_task_name, encoded_source_matches_fps,
+        CompletedHistoryRow, CompletedJob, ConverterApp, EncodingUiSettings, FolderQueueSummary,
+        FpsUiMode, HistoryMediaInfo, QueueRunState, ReviewPhotoTarget, ReviewSlideTarget,
+        ReviewWorkerRequest, SlintController, SlintTaskDraft, StreamCarryInfo, TaskDisplayCounts,
+        WatchedFolder, active_item_position, camera_run_info_from_media,
+        cleanup_temporary_directory, collect_new_video_task_targets, collect_video_files,
+        completed_history_row, default_task_name, encoded_source_matches_fps,
         encoding_ui_settings_for, estimated_output_bytes, estimated_remaining,
         expanded_task_targets, explicit_fps, finalize_conversion,
         finalize_conversion_replacing_output, folder_queue_summary,
@@ -7699,13 +8332,13 @@ mod tests {
         publish_specialized_output, python_existing_library_name, queue_admission_occupied_paths,
         queued_target_set, rebuild_slideshow_task_images, remaining_task_inputs,
         rename_completed_task_directories, replacement_backup_path, restored_folder_watches,
-        review_request_is_priority, run_with_retry, select_trim_source, should_inhibit_sleep,
-        should_skip_queue_source, slideshow_natural_key, slideshow_review_is_editable,
-        staging_path, target_fps_status, target_fps_status_with_source, task_draft_output_summary,
-        task_progress_segments, temporary_file_process_id, update_extended_selection,
-        validate_task_targets, wait_for_retry, worker_error_is_locked_input,
-        worker_error_is_queue_fatal, worker_error_should_retry, workflow_shows_encoder,
-        workflow_shows_fps,
+        review_request_is_priority, run_with_retry, select_trim_source, selected_task_files,
+        should_inhibit_sleep, should_skip_queue_source, slideshow_natural_key,
+        slideshow_review_is_editable, slint_settings_snapshot, staging_path, target_fps_status,
+        target_fps_status_with_source, task_draft_output_summary, task_progress_segments,
+        temporary_file_process_id, update_extended_selection, validate_task_targets,
+        wait_for_retry, worker_error_is_locked_input, worker_error_is_queue_fatal,
+        worker_error_should_retry, workflow_shows_encoder, workflow_shows_fps,
     };
     #[cfg(feature = "native-ffmpeg")]
     use super::{packaged_runtime_report, resolve_lut_path};
@@ -8116,6 +8749,59 @@ mod tests {
     }
 
     #[test]
+    fn running_task_settings_keep_the_normal_layout_and_select_its_preset() {
+        let app = ConverterApp {
+            available_encoders: vec![Encoder::X265, Encoder::SvtAv1],
+            ..ConverterApp::default()
+        };
+        let mut settings = default_settings(ContentMode::Animation, Encoder::SvtAv1);
+        settings.fps = FpsPolicy::Exact(23.976);
+        settings.quality = Some(31.0);
+        settings.speed_preset = Some("10".to_owned());
+
+        let snapshot = slint_settings_snapshot(&app, Some(&settings));
+
+        assert_eq!(snapshot.mode_index, 1);
+        assert_eq!(snapshot.encoder_labels[snapshot.encoder_index], "libsvtav1");
+        assert!(snapshot.show_encoder);
+        assert!(snapshot.show_fps);
+        assert!(snapshot.show_explicit_fps);
+        assert!((snapshot.quality - 31.0).abs() < f32::EPSILON);
+        assert_eq!(snapshot.speed, "10");
+        assert_eq!(snapshot.speed_labels[snapshot.speed_index], "10");
+    }
+
+    #[test]
+    fn quality_guides_are_specific_to_each_software_codec() {
+        let app = ConverterApp {
+            available_encoders: vec![Encoder::X264, Encoder::X265, Encoder::SvtAv1],
+            ..ConverterApp::default()
+        };
+        let x264 = slint_settings_snapshot(
+            &app,
+            Some(&default_settings(ContentMode::Tv, Encoder::X264)),
+        );
+        let x265 = slint_settings_snapshot(
+            &app,
+            Some(&default_settings(ContentMode::Tv, Encoder::X265)),
+        );
+        let svt_av1 = slint_settings_snapshot(
+            &app,
+            Some(&default_settings(ContentMode::Tv, Encoder::SvtAv1)),
+        );
+
+        assert!((x264.quality_maximum - 51.0).abs() < f32::EPSILON);
+        assert!((x265.quality_maximum - 51.0).abs() < f32::EPSILON);
+        assert!((svt_av1.quality_maximum - 63.0).abs() < f32::EPSILON);
+        assert_eq!(x264.quality_level, "Balanced");
+        assert_eq!(x265.quality_level, "Balanced");
+        assert_eq!(svt_av1.quality_level, "Balanced");
+        assert_eq!(x264.quality_guide_labels[2], "23\u{2013}27\nBalanced");
+        assert_eq!(x265.quality_guide_labels[2], "26\u{2013}31\nBalanced");
+        assert_eq!(svt_av1.quality_guide_labels[2], "32\u{2013}39\nBalanced");
+    }
+
+    #[test]
     fn quality_and_preset_memory_is_independent_per_mode_and_encoder() {
         let remembered = HashMap::from([
             (
@@ -8243,6 +8929,7 @@ mod tests {
             default_settings(ContentMode::CameraVideos, Encoder::X265),
         );
         let mut job = CompletedJob {
+            input: "DJI_0001.MP4".into(),
             output: "DJI_0001.mp4".into(),
             lut_name: None,
             start_time: "start".to_owned(),
@@ -8250,10 +8937,13 @@ mod tests {
             process_minutes: "1.00".to_owned(),
             original: HistoryMediaInfo {
                 fps: Some(29.97),
+                codec: Some("h264".to_owned()),
+                duration: Some(Duration::from_secs(125)),
                 ..HistoryMediaInfo::default()
             },
             converted: HistoryMediaInfo {
                 fps: Some(23.976),
+                codec: Some("hevc".to_owned()),
                 ..HistoryMediaInfo::default()
             },
         };
@@ -8264,6 +8954,11 @@ mod tests {
         assert_eq!(configuration.columns()[11], "x265");
         assert_ne!(configuration.columns()[12], "-");
         assert_ne!(configuration.columns()[13], "-");
+        assert_eq!(configuration.task_id(), Some("camera"));
+        assert_eq!(configuration.input_path(), Some("DJI_0001.MP4"));
+        assert_eq!(configuration.original_codec(), Some("h264"));
+        assert_eq!(configuration.converted_codec(), Some("hevc"));
+        assert_eq!(configuration.duration(), Some("02:05"));
         job.lut_name = Some("DJI_Osmo_Action_6_D-Log_M_to_Rec.709.cube".to_owned());
         assert_eq!(
             completed_history_row(&task, &job).columns()[2],
@@ -8278,8 +8973,133 @@ mod tests {
         );
         let trim_configuration = completed_history_row(&trim, &job);
         assert_eq!(
-            &trim_configuration.columns()[11..],
+            &trim_configuration.columns()[11..14],
             ["Stream copy", "-", "-"]
+        );
+
+        let completed_files = selected_task_files(&task, &[configuration]);
+        assert_eq!(completed_files.len(), 1);
+        assert_eq!(completed_files[0].status, "Completed");
+        assert_eq!(completed_files[0].conversion_time, "1.00 min");
+        assert_eq!(completed_files[0].codec, "h264 → hevc");
+        assert_eq!(completed_files[0].duration, "02:05");
+
+        let queued = QueueTask::new(
+            "queued",
+            "Queued",
+            vec!["waiting.mkv".into()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        let queued_files = selected_task_files(&queued, &[]);
+        assert_eq!(queued_files.len(), 1);
+        assert_eq!(queued_files[0].status, "Queued");
+        assert_eq!(queued_files[0].started_time, "-");
+        assert_eq!(queued_files[0].original_size, "-");
+    }
+
+    #[test]
+    fn legacy_completed_history_is_included_in_matching_folder_task_details() {
+        let root = temporary_test_directory("legacy-completed-task-details");
+        let series = root.join("series");
+        let completed_path = series.join("episode-01.mkv");
+        let pending_path = series.join("episode-02.mp4");
+        let converted_directory = root.join("archive (x265)");
+        let converted_path = converted_directory.join("episode-03.mkv");
+        std::fs::create_dir_all(series.join("original")).unwrap();
+        std::fs::create_dir_all(&converted_directory).unwrap();
+        std::fs::write(&completed_path, b"converted").unwrap();
+        std::fs::write(series.join("original").join("episode-01.mp4"), b"source").unwrap();
+        std::fs::write(&pending_path, b"pending").unwrap();
+        std::fs::write(&converted_path, b"converted directory").unwrap();
+        let mut columns = std::array::from_fn(|_| "-".to_owned());
+        columns[0] = completed_path.display().to_string();
+        columns[1] = "TV".to_owned();
+        columns[3] = "2026-08-25 22:57:17".to_owned();
+        columns[4] = "2026-08-25 23:53:36".to_owned();
+        columns[5] = "56.31".to_owned();
+        columns[6] = "2025.38 MB".to_owned();
+        columns[7] = "693.65 MB".to_owned();
+        columns[9] = "25".to_owned();
+        columns[10] = "25".to_owned();
+        columns[11] = "x265".to_owned();
+        columns[12] = "28".to_owned();
+        columns[13] = "medium".to_owned();
+        let legacy_row = CompletedHistoryRow::new(columns);
+        let mut task = QueueTask::new(
+            "folder-task",
+            "TV folder",
+            vec![root.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        task.source_root = Some(root.clone());
+        let watch = WatchedFolder {
+            root: root.clone(),
+            settings: task.settings.clone(),
+            snapshot: Vec::new(),
+        };
+        let mut queue = Queue::default();
+        queue.add(task.clone()).unwrap();
+        let summary = folder_queue_summary(&watch, &queue);
+
+        let files = selected_task_files(&task, &[legacy_row]);
+
+        assert_eq!(files.len(), summary.files);
+        assert_eq!(files.len(), 3);
+        let completed = files
+            .iter()
+            .find(|file| file.path == completed_path.display().to_string())
+            .unwrap();
+        assert_eq!(completed.status, "Completed");
+        assert_eq!(completed.conversion_time, "56.31 min");
+        assert_eq!(completed.original_size, "2025.38 MB");
+        assert_eq!(
+            files
+                .iter()
+                .find(|file| file.path == pending_path.display().to_string())
+                .unwrap()
+                .status,
+            "Queued"
+        );
+        assert_eq!(
+            files
+                .iter()
+                .find(|file| file.path == converted_path.display().to_string())
+                .unwrap()
+                .status,
+            "Completed"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_details_default_to_natural_full_path_order() {
+        let season_ten_episode_one = PathBuf::from("season-10").join("episode-1.mp4");
+        let season_two_episode_ten = PathBuf::from("season-2").join("episode-10.mp4");
+        let season_two_episode_two = PathBuf::from("season-2").join("episode-2.mp4");
+        let task = QueueTask::new(
+            "natural-order",
+            "Natural order",
+            vec![
+                season_ten_episode_one.clone(),
+                season_two_episode_ten.clone(),
+                season_two_episode_two.clone(),
+            ],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+
+        let files = selected_task_files(&task, &[]);
+        let paths = files
+            .iter()
+            .map(|file| PathBuf::from(&file.path))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            [
+                season_two_episode_two,
+                season_two_episode_ten,
+                season_ten_episode_one,
+            ]
         );
     }
 
@@ -8605,6 +9425,20 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_pause_becomes_a_one_shot_pause_between_files() {
+        let mut controller = SlintController::new();
+        controller.app.queue_run_state = QueueRunState::PausedBetweenFiles;
+
+        let snapshot = controller.snapshot();
+
+        assert!(snapshot.is_running);
+        assert!(snapshot.is_paused);
+        assert!(snapshot.paused_between_files);
+        assert!(!snapshot.pause_after_current);
+        assert_eq!(snapshot.active_title, "Queue paused");
+    }
+
+    #[test]
     fn original_backup_marks_a_source_as_completed() {
         let root = temporary_test_directory("completed-source");
         let source = root.join("episode.mkv");
@@ -8716,6 +9550,31 @@ mod tests {
         std::fs::write(&episode_two, b"two").unwrap();
 
         assert_eq!(collect_video_files(&root), [episode_two, episode_ten]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn video_folder_scheduler_naturally_sorts_the_entire_path() {
+        let root = temporary_test_directory("natural-full-path-video-order");
+        let season_ten = root.join("season10");
+        let season_two = root.join("season2");
+        std::fs::create_dir_all(&season_ten).unwrap();
+        std::fs::create_dir_all(&season_two).unwrap();
+        let season_ten_episode_one = season_ten.join("episode1.mkv");
+        let season_two_episode_ten = season_two.join("episode10.mkv");
+        let season_two_episode_two = season_two.join("episode2.mkv");
+        std::fs::write(&season_ten_episode_one, b"one").unwrap();
+        std::fs::write(&season_two_episode_ten, b"ten").unwrap();
+        std::fs::write(&season_two_episode_two, b"two").unwrap();
+
+        assert_eq!(
+            collect_video_files(&root),
+            [
+                season_two_episode_two,
+                season_two_episode_ten,
+                season_ten_episode_one,
+            ]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

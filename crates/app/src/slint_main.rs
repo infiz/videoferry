@@ -4,21 +4,31 @@
 #![deny(unsafe_code)]
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use slint::language::StandardListViewItem;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
 use slint::{
     CloseRequestResponse, ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer,
     SharedString, Timer, TimerMode, VecModel,
 };
-use videoferry_app::legacy::{SlintAppSnapshot, SlintController, SlintTaskSnapshot};
+use videoferry_app::legacy::{
+    SlintAppSnapshot, SlintController, SlintTaskFileSnapshot, SlintTaskSnapshot,
+};
 
 slint::include_modules!();
 
 const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONVERSION_STATUS_INTERVAL: Duration = Duration::from_secs(1);
 const PRODUCT_PAGE_URL: &str = "https://apps.infiz.com/videoferry";
+
+#[derive(Clone, Copy, Default)]
+struct TaskFileSort {
+    column: usize,
+    descending: bool,
+}
 
 fn main() -> Result<(), slint::PlatformError> {
     if videoferry_app::legacy::handle_runtime_verification() {
@@ -31,11 +41,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
     ui.set_app_version(SharedString::from(env!("CARGO_PKG_VERSION")));
     let controller = Rc::new(RefCell::new(SlintController::new()));
+    let task_file_sort = Rc::new(RefCell::new(TaskFileSort::default()));
 
-    wire_callbacks(&ui, &controller);
+    wire_callbacks(&ui, &controller, &task_file_sort);
     wire_native_file_drop(&ui, &controller);
     let initial_snapshot = controller.borrow().snapshot();
-    refresh(&ui, &initial_snapshot);
+    refresh(&ui, &initial_snapshot, *task_file_sort.borrow());
 
     let timer = Timer::default();
     let weak_ui = ui.as_weak();
@@ -46,6 +57,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let timer_status_refresh = Rc::clone(&next_status_refresh);
     let last_completion_notification = Rc::new(RefCell::new(String::new()));
     let timer_completion_notification = Rc::clone(&last_completion_notification);
+    let timer_task_file_sort = Rc::clone(&task_file_sort);
     timer.start(TimerMode::Repeated, CONTROLLER_POLL_INTERVAL, move || {
         let Some(ui) = weak_ui.upgrade() else {
             return;
@@ -80,7 +92,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if snapshot != *timer_snapshot.borrow() {
-            refresh(&ui, &snapshot);
+            refresh(&ui, &snapshot, *timer_task_file_sort.borrow());
             *timer_snapshot.borrow_mut() = snapshot;
         }
     });
@@ -129,11 +141,15 @@ fn wire_native_file_drop(ui: &AppWindow, controller: &Rc<RefCell<SlintController
     });
 }
 
-fn wire_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintController>>) {
+fn wire_callbacks(
+    ui: &AppWindow,
+    controller: &Rc<RefCell<SlintController>>,
+    task_file_sort: &Rc<RefCell<TaskFileSort>>,
+) {
     ui.on_open_product_page(|| {
         let _result = open_product_page();
     });
-    wire_queue_callbacks(ui, controller);
+    wire_queue_callbacks(ui, controller, task_file_sort);
     wire_task_builder_callbacks(ui, controller);
     wire_settings_callbacks(ui, controller);
 }
@@ -232,7 +248,11 @@ fn wire_task_builder_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintCont
     });
 }
 
-fn wire_queue_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintController>>) {
+fn wire_queue_callbacks(
+    ui: &AppWindow,
+    controller: &Rc<RefCell<SlintController>>,
+    task_file_sort: &Rc<RefCell<TaskFileSort>>,
+) {
     let start_controller = Rc::clone(controller);
     ui.on_start_queue(move || start_controller.borrow_mut().start_queue());
 
@@ -250,6 +270,24 @@ fn wire_queue_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintController>
             controller.select_task(index);
             controller.retry_selected();
             controller.start_selected();
+        }
+    });
+
+    let weak_ui = ui.as_weak();
+    let sort_controller = Rc::clone(controller);
+    let sort_state = Rc::clone(task_file_sort);
+    ui.on_sort_task_files(move |column, ascending| {
+        let Some(column) = valid_index(column).filter(|column| *column <= 10) else {
+            return;
+        };
+        let sort = TaskFileSort {
+            column,
+            descending: !ascending,
+        };
+        *sort_state.borrow_mut() = sort;
+        let files = sort_controller.borrow().snapshot().selected_task_files;
+        if let Some(ui) = weak_ui.upgrade() {
+            refresh_task_file_rows(&ui, &files, sort);
         }
     });
 
@@ -496,7 +534,132 @@ fn task_item(task: &SlintTaskSnapshot) -> TaskItem {
     }
 }
 
-fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
+fn task_file_path_row(file: &SlintTaskFileSnapshot) -> ModelRc<StandardListViewItem> {
+    model(vec![StandardListViewItem::from(file.path.as_str())])
+}
+
+fn task_file_metric_row(file: &SlintTaskFileSnapshot) -> ModelRc<StandardListViewItem> {
+    model(vec![
+        StandardListViewItem::from(file.status.as_str()),
+        StandardListViewItem::from(file.started_time.as_str()),
+        StandardListViewItem::from(file.completed_time.as_str()),
+        StandardListViewItem::from(file.conversion_time.as_str()),
+        StandardListViewItem::from(file.original_size.as_str()),
+        StandardListViewItem::from(file.new_size.as_str()),
+        StandardListViewItem::from(file.original_fps.as_str()),
+        StandardListViewItem::from(file.new_fps.as_str()),
+        StandardListViewItem::from(file.codec.as_str()),
+        StandardListViewItem::from(file.duration.as_str()),
+    ])
+}
+
+fn task_file_table_rows(
+    files: &[SlintTaskFileSnapshot],
+) -> (
+    Vec<ModelRc<StandardListViewItem>>,
+    Vec<ModelRc<StandardListViewItem>>,
+) {
+    (
+        files.iter().map(task_file_path_row).collect(),
+        files.iter().map(task_file_metric_row).collect(),
+    )
+}
+
+fn task_file_number(value: &str) -> Option<f64> {
+    value
+        .split_whitespace()
+        .next()
+        .and_then(|number| number.parse().ok())
+}
+
+fn task_file_duration_seconds(value: &str) -> Option<u64> {
+    value.split(':').try_fold(0_u64, |total, part| {
+        part.parse::<u64>()
+            .ok()
+            .and_then(|part| total.checked_mul(60)?.checked_add(part))
+    })
+}
+
+fn compare_task_file_values(left: &str, right: &str) -> Ordering {
+    match (left == "-", right == "-") {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => left.to_lowercase().cmp(&right.to_lowercase()),
+    }
+}
+
+fn compare_task_file_numbers(left: &str, right: &str) -> Ordering {
+    match (task_file_number(left), task_file_number(right)) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn compare_task_file_durations(left: &str, right: &str) -> Ordering {
+    match (
+        task_file_duration_seconds(left),
+        task_file_duration_seconds(right),
+    ) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn compare_task_files(
+    left: &SlintTaskFileSnapshot,
+    right: &SlintTaskFileSnapshot,
+    column: usize,
+) -> Ordering {
+    match column {
+        1 => compare_task_file_values(&left.status, &right.status),
+        2 => compare_task_file_values(&left.started_time, &right.started_time),
+        3 => compare_task_file_values(&left.completed_time, &right.completed_time),
+        4 => compare_task_file_numbers(&left.conversion_time, &right.conversion_time),
+        5 => compare_task_file_numbers(&left.original_size, &right.original_size),
+        6 => compare_task_file_numbers(&left.new_size, &right.new_size),
+        7 => compare_task_file_numbers(&left.original_fps, &right.original_fps),
+        8 => compare_task_file_numbers(&left.new_fps, &right.new_fps),
+        9 => compare_task_file_values(&left.codec, &right.codec),
+        10 => compare_task_file_durations(&left.duration, &right.duration),
+        _ => Ordering::Equal,
+    }
+}
+
+fn sorted_task_files(
+    files: &[SlintTaskFileSnapshot],
+    sort: TaskFileSort,
+) -> Vec<SlintTaskFileSnapshot> {
+    let mut files = files.to_vec();
+    if sort.column == 0 {
+        if sort.descending {
+            files.reverse();
+        }
+    } else {
+        files.sort_by(|left, right| {
+            let order = compare_task_files(left, right, sort.column);
+            if sort.descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+    }
+    files
+}
+
+fn refresh_task_file_rows(ui: &AppWindow, files: &[SlintTaskFileSnapshot], sort: TaskFileSort) {
+    let files = sorted_task_files(files, sort);
+    let (path_rows, metric_rows) = task_file_table_rows(&files);
+    ui.set_selected_task_path_rows(model(path_rows));
+    ui.set_selected_task_metric_rows(model(metric_rows));
+}
+
+fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFileSort) {
     let tasks = snapshot.tasks.iter().map(task_item).collect::<Vec<_>>();
     let history = snapshot
         .history
@@ -511,6 +674,8 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
         .collect::<Vec<_>>();
 
     ui.set_tasks(model(tasks));
+    ui.set_selected_task_title(SharedString::from(&snapshot.selected_task_title));
+    refresh_task_file_rows(ui, &snapshot.selected_task_files, task_file_sort);
     ui.set_history(model(history));
     ui.set_mode_labels(model(strings(&snapshot.settings.mode_labels)));
     ui.set_encoder_labels(model(strings(&snapshot.settings.encoder_labels)));
@@ -524,6 +689,9 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
     ui.set_show_explicit_fps(snapshot.settings.show_explicit_fps);
     ui.set_quality(snapshot.settings.quality);
     ui.set_show_quality(snapshot.settings.show_quality);
+    ui.set_quality_level(SharedString::from(&snapshot.settings.quality_level));
+    ui.set_quality_guide_labels(model(strings(&snapshot.settings.quality_guide_labels)));
+    ui.set_quality_maximum(snapshot.settings.quality_maximum);
     ui.set_speed(SharedString::from(&snapshot.settings.speed));
     ui.set_speed_labels(model(strings(&snapshot.settings.speed_labels)));
     ui.set_speed_index(i32::try_from(snapshot.settings.speed_index).unwrap_or_default());
@@ -563,6 +731,7 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
     ui.set_progress(snapshot.progress);
     ui.set_is_running(snapshot.is_running);
     ui.set_is_paused(snapshot.is_paused);
+    ui.set_paused_between_files(snapshot.paused_between_files);
     ui.set_selected_can_move(snapshot.selected_can_move);
     ui.set_preview_enabled(snapshot.preview_enabled);
     ui.set_has_live_preview(snapshot.live_preview.is_some());
@@ -596,4 +765,65 @@ fn strings(values: &[String]) -> Vec<SharedString> {
 
 fn model<T: Clone + 'static>(values: Vec<T>) -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::from(values)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SlintTaskFileSnapshot, TaskFileSort, sorted_task_files};
+
+    fn task_file(path: &str, size: &str, duration: &str) -> SlintTaskFileSnapshot {
+        SlintTaskFileSnapshot {
+            title: path.to_owned(),
+            path: path.to_owned(),
+            status: "Completed".to_owned(),
+            started_time: "-".to_owned(),
+            completed_time: "-".to_owned(),
+            conversion_time: "-".to_owned(),
+            original_size: size.to_owned(),
+            new_size: "-".to_owned(),
+            original_fps: "-".to_owned(),
+            new_fps: "-".to_owned(),
+            codec: "x265".to_owned(),
+            duration: duration.to_owned(),
+        }
+    }
+
+    #[test]
+    fn task_file_numeric_columns_sort_by_value() {
+        let files = vec![
+            task_file("file-2.mp4", "9.5 MB", "09:30"),
+            task_file("file-10.mp4", "100 MB", "01:02:03"),
+            task_file("file-20.mp4", "12 MB", "10:00"),
+        ];
+
+        let by_size = sorted_task_files(
+            &files,
+            TaskFileSort {
+                column: 5,
+                descending: false,
+            },
+        );
+        assert_eq!(
+            by_size
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["file-2.mp4", "file-20.mp4", "file-10.mp4"]
+        );
+
+        let by_duration = sorted_task_files(
+            &files,
+            TaskFileSort {
+                column: 10,
+                descending: true,
+            },
+        );
+        assert_eq!(
+            by_duration
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["file-10.mp4", "file-20.mp4", "file-2.mp4"]
+        );
+    }
 }

@@ -1,4 +1,4 @@
-import { ComboBox, LineEdit, ListView, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
+import { ComboBox, LineEdit, ListView, ScrollView, Slider, SpinBox, StandardTableView, Switch } from "std-widgets.slint";
 import "../assets/fonts/NotoSansCJKsc-Regular.otf";
 
 export struct TaskItem {
@@ -40,6 +40,7 @@ component SoftButton inherits Rectangle {
     in property <image> icon;
     in property <bool> show-icon: false;
     in property <bool> primary: false;
+    in property <bool> selected: false;
     in property <bool> enabled: true;
     in property <string> accessible-name: text;
     callback clicked;
@@ -49,11 +50,12 @@ component SoftButton inherits Rectangle {
     horizontal-stretch: 0;
     border-radius: 20px;
     background: !root.enabled ? #27272d
+        : root.selected ? (touch.pressed ? #7f1119 : touch.has-hover ? #b81621 : #98121b)
         : root.primary ? (touch.pressed ? #c90d18 : touch.has-hover ? #fa2330 : #e50914)
         : touch.pressed ? #35353d : touch.has-hover ? #2a2a31 : #202026;
-    border-width: focus.has-focus ? 2px : root.primary ? 0px : 1px;
-    border-color: focus.has-focus ? #ffffff : #3a3a43;
-    animate background { duration: 120ms; easing: ease-out; }
+    border-width: focus.has-focus || root.selected ? 2px : root.primary ? 0px : 1px;
+    border-color: focus.has-focus ? #ffffff : root.selected ? #ff8d95 : #3a3a43;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
     accessible-role: button;
     accessible-label: root.accessible-name;
     accessible-enabled: root.enabled;
@@ -708,7 +710,7 @@ component HistoryCard inherits Rectangle {
             }
         }
         history-copy-slot := Rectangle {
-            width: max(0px, root.width - 392px);
+            width: max(0px, root.width - 414px);
             horizontal-stretch: 0;
             background: transparent;
             clip: true;
@@ -726,18 +728,18 @@ component HistoryCard inherits Rectangle {
             HoverText { y: 67px; width: parent.width; horizontal-stretch: 0; text: item.configuration; text-color: #a9a9b2; font-size: 11px; font-weight: 600; }
         }
         HorizontalLayout {
-            width: 278px;
+            width: 300px;
             horizontal-stretch: 0;
             spacing: 6px;
             alignment: center;
             SoftButton { text: "Play"; width: 76px; clicked => { root.opened(); } }
             SoftButton { text: "Show folder"; width: 112px; clicked => { root.revealed(); } }
-            SoftButton { text: "Copy path"; width: 88px; clicked => { root.copied(); } }
+            SoftButton { text: "Copy path"; width: 100px; clicked => { root.copied(); } }
         }
     }
 
     touch := TouchArea {
-        width: max(0px, root.width - 306px);
+        width: max(0px, root.width - 328px);
         mouse-cursor: pointer;
         clicked => { root.opened(); }
     }
@@ -766,6 +768,24 @@ export component AppWindow inherits Window {
     default-font-size: 14px;
 
     in property <[TaskItem]> tasks;
+    in property <string> selected-task-title;
+    in property <[[StandardListViewItem]]> selected-task-path-rows;
+    in property <[[StandardListViewItem]]> selected-task-metric-rows;
+    in-out property <[TableColumn]> task-file-path-column: [
+        { title: "Full path", min-width: 180px, horizontal-stretch: 1, sort-order: SortOrder.ascending },
+    ];
+    in-out property <[TableColumn]> task-file-metric-columns: [
+        { title: "Status", min-width: 72px, width: 82px },
+        { title: "Started", min-width: 96px, width: 126px },
+        { title: "Completed", min-width: 96px, width: 126px },
+        { title: "Conversion", min-width: 78px, width: 96px },
+        { title: "Original size", min-width: 78px, width: 94px },
+        { title: "New size", min-width: 72px, width: 88px },
+        { title: "Original FPS", min-width: 72px, width: 88px },
+        { title: "New FPS", min-width: 66px, width: 78px },
+        { title: "Codec", min-width: 72px, width: 92px },
+        { title: "Duration", min-width: 86px, horizontal-stretch: 1 },
+    ];
     in property <[HistoryItem]> history;
     in property <string> app-version;
     in property <[string]> mode-labels;
@@ -780,6 +800,9 @@ export component AppWindow inherits Window {
     in property <bool> show-explicit-fps: false;
     in property <float> quality: 28;
     in property <bool> show-quality: true;
+    in property <string> quality-level: "Balanced";
+    in property <[string]> quality-guide-labels;
+    in property <float> quality-maximum: 63;
     in property <string> speed: "medium";
     in property <[string]> speed-labels;
     in property <int> speed-index: 0;
@@ -817,6 +840,7 @@ export component AppWindow inherits Window {
     in property <float> progress: 0;
     in property <bool> is-running: false;
     in property <bool> is-paused: false;
+    in property <bool> paused-between-files: false;
     in property <bool> selected-can-move: false;
     in property <bool> preview-enabled: false;
     in property <bool> has-live-preview: false;
@@ -831,6 +855,7 @@ export component AppWindow inherits Window {
     in property <string> task-draft-summary;
     in property <string> task-draft-output-summary;
     in-out property <int> selected-index: -1;
+    in-out property <bool> task-details-open: false;
     in-out property <int> page: 0;
     in-out property <bool> settings-open: false;
     in-out property <bool> task-builder-open: false;
@@ -843,9 +868,11 @@ export component AppWindow inherits Window {
     in-out property <int> confirm-action: 0;
     in-out property <int> drag-task-index: -1;
     in-out property <int> drag-target-index: -1;
+    in-out property <length> task-file-path-width: 360px;
+    in-out property <length> task-file-scroll-y: 0px;
     property <bool> settings-editable: root.task-builder-open || !root.is-running;
-    property <bool> narrow-live-controls: root.width < 840px;
-    property <length> live-panel-height: (root.live-details-expanded ? 252px : 166px) + (root.narrow-live-controls ? 50px : 0px);
+    property <bool> narrow-live-controls: root.width < 960px;
+    property <length> live-panel-height: (root.live-details-expanded && !root.paused-between-files ? 252px : 166px) + (root.narrow-live-controls ? 50px : 0px);
 
     callback begin-task;
     callback prepare-task() -> bool;
@@ -858,6 +885,7 @@ export component AppWindow inherits Window {
     callback start-queue;
     callback select-task(int);
     callback retry-task(int);
+    callback sort-task-files(int, bool);
     callback move-selected(int);
     callback reorder-task(int, int);
     callback remove-selected;
@@ -1158,7 +1186,11 @@ export component AppWindow inherits Window {
                                     queue-running: root.is-running;
                                     dragging: root.drag-task-index == index;
                                     drop-target: root.drag-target-index == index;
-                                    selected(index) => { root.selected-index = index; root.select-task(index); }
+                                    selected(index) => {
+                                        root.selected-index = index;
+                                        root.task-details-open = true;
+                                        root.select-task(index);
+                                    }
                                     retry(index) => { root.selected-index = index; root.retry-task(index); }
                                     copy-error(error) => { root.copy-text(error); }
                                     drag-started(index) => {
@@ -1177,6 +1209,109 @@ export component AppWindow inherits Window {
                                         root.drag-target-index = -1;
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.page == 0 && root.task-details-open && root.selected-index >= 0: task-details-panel := Rectangle {
+                x: 16px;
+                y: 16px;
+                width: parent.width - 32px;
+                height: root.is-running
+                    ? max(0px, parent.height - root.live-panel-height - 60px)
+                    : parent.height - 32px;
+                clip: true;
+                border-radius: 14px;
+                background: #131317;
+                border-width: 1px;
+                border-color: #303038;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        height: 40px;
+                        vertical-stretch: 0;
+                        spacing: 12px;
+                        Text {
+                            text: "Files in " + root.selected-task-title;
+                            color: #ffffff;
+                            font-size: 16px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text {
+                            width: 76px;
+                            text: root.selected-task-path-rows.length + (root.selected-task-path-rows.length == 1 ? " file" : " files");
+                            color: #85858f;
+                            font-size: 12px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            horizontal-stretch: 0;
+                        }
+                        SoftButton {
+                            text: "Close";
+                            accessible-name: "Close task details";
+                            width: 92px;
+                            height: 32px;
+                            clicked => { root.task-details-open = false; }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 0px;
+                        path-table := StandardTableView {
+                            width: root.task-file-path-width;
+                            horizontal-stretch: 0;
+                            rows: root.selected-task-path-rows;
+                            columns <=> root.task-file-path-column;
+                            current-row: -1;
+                            viewport-y <=> root.task-file-scroll-y;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                            accessible-label: "File paths";
+                            sort-ascending(column) => {
+                                if (metric-table.current-sort-column >= 0) {
+                                    root.task-file-metric-columns[metric-table.current-sort-column].sort-order = SortOrder.unsorted;
+                                }
+                                root.sort-task-files(0, true);
+                            }
+                            sort-descending(column) => {
+                                if (metric-table.current-sort-column >= 0) {
+                                    root.task-file-metric-columns[metric-table.current-sort-column].sort-order = SortOrder.unsorted;
+                                }
+                                root.sort-task-files(0, false);
+                            }
+                        }
+                        path-divider := Rectangle {
+                            width: 8px;
+                            horizontal-stretch: 0;
+                            background: path-resize.has-hover || path-resize.pressed ? #e50914 : #35353d;
+                            path-resize := TouchArea {
+                                mouse-cursor: ew-resize;
+                                moved => {
+                                    if (self.pressed) {
+                                        root.task-file-path-width = max(220px, min(560px,
+                                            root.task-file-path-width + self.mouse-x - self.pressed-x));
+                                    }
+                                }
+                            }
+                        }
+                        metric-table := StandardTableView {
+                            rows: root.selected-task-metric-rows;
+                            columns <=> root.task-file-metric-columns;
+                            current-row: -1;
+                            viewport-y <=> root.task-file-scroll-y;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-on;
+                            accessible-label: "File conversion details";
+                            sort-ascending(column) => {
+                                root.task-file-path-column[0].sort-order = SortOrder.unsorted;
+                                root.sort-task-files(column + 1, true);
+                            }
+                            sort-descending(column) => {
+                                root.task-file-path-column[0].sort-order = SortOrder.unsorted;
+                                root.sort-task-files(column + 1, false);
                             }
                         }
                     }
@@ -1305,14 +1440,14 @@ export component AppWindow inherits Window {
                                 width: parent.width;
                                 height: 18px;
                                 Text {
-                                    text: "Current file progress";
+                                    text: root.paused-between-files ? "Waiting between files" : "Current file progress";
                                     color: #aaaab5;
                                     font-size: 11px;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: round(root.progress * 100) + "%  ·  " + root.live-position + " / " + root.live-duration;
+                                    text: root.paused-between-files ? "Current file completed" : round(root.progress * 100) + "%  ·  " + root.live-position + " / " + root.live-duration;
                                     color: #f0f0f4;
                                     font-size: 12px;
                                     font-weight: 700;
@@ -1337,7 +1472,7 @@ export component AppWindow inherits Window {
                                 Rectangle {
                                     x: 0px;
                                     y: 0px;
-                                    width: current-file-track.width * root.progress;
+                                    width: current-file-track.width * (root.paused-between-files ? 1 : root.progress);
                                     height: current-file-track.height;
                                     background: @linear-gradient(90deg, #e50914 0%, #ff6570 100%);
                                 }
@@ -1362,22 +1497,24 @@ export component AppWindow inherits Window {
                             text: root.preview-enabled ? "Hide preview" : "Preview";
                             accessible-name: root.preview-enabled ? "Hide live conversion preview" : "Show live conversion preview";
                             width: 100px;
+                            enabled: !root.paused-between-files;
                             clicked => { root.set-live-preview(!root.preview-enabled); }
                         }
-                        SoftButton { width: 82px; text: root.is-paused ? "Resume" : "Pause"; accessible-name: root.is-paused ? "Resume conversion" : "Pause conversion"; clicked => { root.toggle-pause(); } }
+                        SoftButton { width: 82px; text: root.is-paused ? "Resume" : "Pause"; accessible-name: root.is-paused ? "Resume conversion" : "Pause conversion"; selected: root.paused-between-files; clicked => { root.toggle-pause(); } }
                         SoftButton {
                             width: 158px;
-                            text: root.pause-after-scheduled ? "Pause is scheduled" : "Pause after this file";
+                            text: root.pause-after-scheduled ? "✓ Pause scheduled" : "Pause after this file";
                             accessible-name: root.pause-after-scheduled ? "Cancel scheduled pause" : "Pause after this file";
-                            primary: root.pause-after-scheduled;
+                            selected: root.pause-after-scheduled;
+                            enabled: !root.paused-between-files;
                             clicked => { root.pause-after-current(); }
                         }
                         SoftButton {
-                            width: 88px;
+                            width: 108px;
                             text: root.live-details-expanded ? "Less details" : "Details";
                             clicked => { root.live-details-expanded = !root.live-details-expanded; }
                         }
-                        SoftButton { width: 88px; text: "Stop file"; accessible-name: "Stop current file"; clicked => { root.stop-current(); } }
+                        SoftButton { width: 88px; text: "Stop file"; accessible-name: "Stop current file"; enabled: !root.paused-between-files; clicked => { root.stop-current(); } }
                         SoftButton { width: 86px; text: "Stop all"; clicked => { root.confirm-action = 3; } }
                     }
 
@@ -1399,14 +1536,16 @@ export component AppWindow inherits Window {
                             text: root.preview-enabled ? "Hide preview" : "Preview";
                             accessible-name: root.preview-enabled ? "Hide live conversion preview" : "Show live conversion preview";
                             width: 100px;
+                            enabled: !root.paused-between-files;
                             clicked => { root.set-live-preview(!root.preview-enabled); }
                         }
-                        SoftButton { width: 82px; text: root.is-paused ? "Resume" : "Pause"; accessible-name: root.is-paused ? "Resume conversion" : "Pause conversion"; clicked => { root.toggle-pause(); } }
+                        SoftButton { width: 82px; text: root.is-paused ? "Resume" : "Pause"; accessible-name: root.is-paused ? "Resume conversion" : "Pause conversion"; selected: root.paused-between-files; clicked => { root.toggle-pause(); } }
                         SoftButton {
                             width: 158px;
-                            text: root.pause-after-scheduled ? "Pause is scheduled" : "Pause after this file";
+                            text: root.pause-after-scheduled ? "✓ Pause scheduled" : "Pause after this file";
                             accessible-name: root.pause-after-scheduled ? "Cancel scheduled pause" : "Pause after this file";
-                            primary: root.pause-after-scheduled;
+                            selected: root.pause-after-scheduled;
+                            enabled: !root.paused-between-files;
                             clicked => { root.pause-after-current(); }
                         }
                     }
@@ -1417,15 +1556,15 @@ export component AppWindow inherits Window {
                         spacing: 8px;
                         alignment: center;
                         SoftButton {
-                            width: 88px;
+                            width: 108px;
                             text: root.live-details-expanded ? "Less details" : "Details";
                             clicked => { root.live-details-expanded = !root.live-details-expanded; }
                         }
-                        SoftButton { width: 88px; text: "Stop file"; accessible-name: "Stop current file"; clicked => { root.stop-current(); } }
+                        SoftButton { width: 88px; text: "Stop file"; accessible-name: "Stop current file"; enabled: !root.paused-between-files; clicked => { root.stop-current(); } }
                         SoftButton { width: 86px; text: "Stop all"; clicked => { root.confirm-action = 3; } }
                     }
 
-                    if root.live-details-expanded: HorizontalLayout {
+                    if root.live-details-expanded && !root.paused-between-files: HorizontalLayout {
                         height: 24px;
                         vertical-stretch: 0;
                         spacing: 6px;
@@ -1690,18 +1829,36 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             Text { text: "Picture quality"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
                             Text {
-                                text: (root.quality <= 20 ? "High detail" : root.quality <= 28 ? "Balanced" : "Smaller file") + "  ·  " + round(root.quality) + " CRF";
+                                text: root.quality-level + "  ·  " + round(root.quality * 10) / 10 + " CRF";
                                 color: #ff6973;
                                 font-size: 12px;
                                 font-weight: 650;
                                 horizontal-alignment: right;
                             }
                         }
+                        HorizontalLayout {
+                            height: 34px;
+                            spacing: 3px;
+                            for label in root.quality-guide-labels: Rectangle {
+                                border-radius: 5px;
+                                background: #19191e;
+                                border-width: 1px;
+                                border-color: #2d2d35;
+                                Text {
+                                    text: label;
+                                    color: #8d8d97;
+                                    font-size: 9px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                         Slider {
                             accessible-label: "Picture quality (CRF)";
                             enabled: root.settings-editable;
                             minimum: 0;
-                            maximum: 63;
+                            maximum: root.quality-maximum;
                             value: root.quality;
                             step: 0.5;
                             changed(value) => { root.set-quality(value); }

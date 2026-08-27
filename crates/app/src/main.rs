@@ -215,6 +215,33 @@ fn speed_options(encoder: Encoder) -> Vec<String> {
     }
 }
 
+fn speed_option_labels(encoder: Encoder) -> Vec<String> {
+    if encoder.is_nvenc() {
+        [
+            "P1 · Fastest",
+            "P2 · Very fast",
+            "P3 · Fast",
+            "P4 · Medium (default)",
+            "P5 · Quality",
+            "P6 · High quality",
+            "P7 · Highest quality",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    } else {
+        speed_options(encoder)
+    }
+}
+
+fn speed_help(encoder: Encoder) -> String {
+    if encoder.is_nvenc() {
+        "P1 is fastest, P4 is medium, and P7 gives the highest quality.".to_owned()
+    } else {
+        "Slower settings usually make a smaller file but take longer.".to_owned()
+    }
+}
+
 struct ReviewPhoto {
     path: PathBuf,
     included: bool,
@@ -1362,12 +1389,13 @@ impl ConverterApp {
             self.encoder,
             Encoder::X264 | Encoder::X265 | Encoder::SvtAv1
         ) {
+            let quality_scale = quality_scale(self.encoder);
             ui.horizontal(|ui| {
                 let label = ui.label("Quality (CRF)");
                 ui.add(
                     egui::DragValue::new(&mut self.quality_crf)
-                        .range(0.0..=63.0)
-                        .speed(0.5),
+                        .range(quality_scale.minimum..=quality_scale.maximum)
+                        .speed(f64::from(quality_scale.step)),
                 )
                 .labelled_by(label.id);
             });
@@ -1401,17 +1429,28 @@ impl ConverterApp {
                     }
                 });
         } else if self.encoder.is_nvenc() {
-            egui::ComboBox::from_label("NVENC preset")
-                .selected_text(&self.speed_preset)
-                .show_ui(ui, |ui| {
-                    for preset in 1..=7 {
-                        let preset = format!("p{preset}");
-                        ui.selectable_value(&mut self.speed_preset, preset.clone(), preset);
-                    }
-                });
+            self.show_nvenc_preset_settings(ui);
         } else if self.encoder.is_videotoolbox() {
             ui.weak("Quality is managed by VideoToolbox.");
         }
+    }
+
+    fn show_nvenc_preset_settings(&mut self, ui: &mut egui::Ui) {
+        let options = speed_options(self.encoder);
+        let labels = speed_option_labels(self.encoder);
+        let selected = options
+            .iter()
+            .position(|preset| preset == &self.speed_preset)
+            .and_then(|index| labels.get(index).cloned())
+            .unwrap_or_else(|| "P4 · Medium (default)".to_owned());
+        egui::ComboBox::from_label("NVENC preset")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for (preset, label) in options.into_iter().zip(labels) {
+                    ui.selectable_value(&mut self.speed_preset, preset, label);
+                }
+            });
+        ui.weak(speed_help(self.encoder));
     }
 
     fn show_slideshow_settings(&mut self, ui: &mut egui::Ui) {
@@ -3640,7 +3679,7 @@ impl ConverterApp {
             }
         };
         if matches!(encoder, Encoder::X264 | Encoder::X265 | Encoder::SvtAv1) {
-            settings.quality = Some(self.quality_crf.clamp(0.0, quality_maximum(encoder)));
+            settings.quality = Some(normalized_quality(encoder, self.quality_crf));
             settings.speed_preset = Some(self.speed_preset.clone());
         } else if encoder.is_nvenc() {
             settings.quality = None;
@@ -3703,7 +3742,7 @@ impl ConverterApp {
     }
 
     fn apply_quality_settings_to_ui(&mut self, settings: &EncodingUiSettings) {
-        self.quality_crf = settings.quality_crf;
+        self.quality_crf = normalized_quality(self.encoder, settings.quality_crf);
         self.speed_preset.clone_from(&settings.speed_preset);
     }
 
@@ -4461,9 +4500,12 @@ pub struct SlintSettingsSnapshot {
     pub show_quality: bool,
     pub quality_level: String,
     pub quality_guide_labels: Vec<String>,
+    pub quality_minimum: f32,
     pub quality_maximum: f32,
+    pub quality_step: f32,
     pub speed: String,
     pub speed_labels: Vec<String>,
+    pub speed_help: String,
     pub speed_index: usize,
     pub show_speed: bool,
     pub prevent_sleep: bool,
@@ -4509,6 +4551,26 @@ pub struct SlintAppSnapshot {
     pub task_draft_targets: Vec<String>,
     pub task_draft_summary: String,
     pub task_draft_output_summary: String,
+}
+
+fn displayed_task_settings(
+    app: &ConverterApp,
+    paused_between_files: bool,
+    editing_task: bool,
+) -> Option<&QueueSettings> {
+    if editing_task {
+        return None;
+    }
+    app.worker
+        .as_ref()
+        .and_then(|worker| app.queue.task(&worker.task_id))
+        .or_else(|| {
+            paused_between_files
+                .then_some(app.selected_id.as_deref())
+                .flatten()
+                .and_then(|id| app.queue.task(id))
+        })
+        .map(|task| &task.settings)
 }
 
 fn task_file_title(path: &str) -> String {
@@ -4767,44 +4829,72 @@ fn selected_task_files(
     files
 }
 
-fn quality_maximum(encoder: Encoder) -> f32 {
+#[derive(Clone, Copy)]
+struct QualityScale {
+    minimum: f32,
+    maximum: f32,
+    step: f32,
+    bands: &'static [(u8, u8, &'static str)],
+}
+
+fn quality_scale(encoder: Encoder) -> QualityScale {
+    // The limits match VideoFerry's pinned FFmpeg build; the UI intentionally uses whole numbers.
+    // The friendly bands use each encoder's documented default or recommended starting point.
     match encoder {
-        Encoder::X264 | Encoder::X265 => 51.0,
-        _ => 63.0,
+        Encoder::X264 => QualityScale {
+            minimum: 0.0,
+            maximum: 51.0,
+            step: 1.0,
+            bands: &[
+                (0, 17, "Max detail"),
+                (18, 22, "High detail"),
+                (23, 27, "Balanced"),
+                (28, 35, "Smaller file"),
+                (36, 51, "Smallest file"),
+            ],
+        },
+        Encoder::X265 => QualityScale {
+            minimum: 0.0,
+            maximum: 51.0,
+            step: 1.0,
+            bands: &[
+                (0, 17, "Max detail"),
+                (18, 25, "High detail"),
+                (26, 31, "Balanced"),
+                (32, 39, "Smaller file"),
+                (40, 51, "Smallest file"),
+            ],
+        },
+        Encoder::SvtAv1 => QualityScale {
+            minimum: 0.0,
+            maximum: 63.0,
+            step: 1.0,
+            bands: &[
+                (0, 19, "Max detail"),
+                (20, 27, "High detail"),
+                (28, 35, "Balanced"),
+                (36, 47, "Smaller file"),
+                (48, 63, "Smallest file"),
+            ],
+        },
+        _ => QualityScale {
+            minimum: 0.0,
+            maximum: 63.0,
+            step: 1.0,
+            bands: &[],
+        },
     }
 }
 
+fn normalized_quality(encoder: Encoder, quality: f32) -> f32 {
+    let scale = quality_scale(encoder);
+    let clamped = quality.clamp(scale.minimum, scale.maximum);
+    let steps = ((clamped - scale.minimum) / scale.step).round();
+    (scale.minimum + steps * scale.step).clamp(scale.minimum, scale.maximum)
+}
+
 fn quality_guidance(encoder: Encoder, quality: f32) -> (String, Vec<String>) {
-    let bands: &[(u8, u8, &str)] = match encoder {
-        Encoder::X264 => &[
-            (0, 17, "Max detail"),
-            (18, 22, "High detail"),
-            (23, 27, "Balanced"),
-            (28, 35, "Smaller file"),
-            (36, 51, "Smallest file"),
-        ],
-        Encoder::X265 => &[
-            (0, 17, "Max detail"),
-            (18, 25, "High detail"),
-            (26, 31, "Balanced"),
-            (32, 39, "Smaller file"),
-            (40, 51, "Smallest file"),
-        ],
-        Encoder::SvtAv1 => &[
-            (0, 23, "Max detail"),
-            (24, 31, "High detail"),
-            (32, 39, "Balanced"),
-            (40, 49, "Smaller file"),
-            (50, 63, "Smallest file"),
-        ],
-        _ => &[
-            (0, 17, "Max detail"),
-            (18, 27, "High detail"),
-            (28, 35, "Balanced"),
-            (36, 45, "Smaller file"),
-            (46, 63, "Smallest file"),
-        ],
-    };
+    let bands = quality_scale(encoder).bands;
     let level = bands
         .iter()
         .find(|(_, end, _)| quality <= f32::from(*end))
@@ -4830,8 +4920,8 @@ fn slint_settings_snapshot(
     let quality = task_settings
         .and_then(|settings| settings.quality)
         .unwrap_or(app.quality_crf);
-    let quality_maximum = quality_maximum(encoder);
-    let quality = quality.clamp(0.0, quality_maximum);
+    let quality_scale = quality_scale(encoder);
+    let quality = normalized_quality(encoder, quality);
     let (quality_level, quality_guide_labels) = quality_guidance(encoder, quality);
     let speed = task_settings.map_or_else(
         || app.speed_preset.clone(),
@@ -4849,7 +4939,8 @@ fn slint_settings_snapshot(
         encoders.push(encoder);
     }
     let fps_modes = fps_modes_for(mode, encoder);
-    let speed_labels = speed_options(encoder);
+    let speed_options = speed_options(encoder);
+    let speed_labels = speed_option_labels(encoder);
     let audio_paths = task_settings.map_or(app.slideshow_audio_paths.as_slice(), |settings| {
         settings.slideshow_audio_paths.as_slice()
     });
@@ -4887,13 +4978,16 @@ fn slint_settings_snapshot(
             && mode != ContentMode::Trim,
         quality_level,
         quality_guide_labels,
-        quality_maximum,
-        speed_index: speed_labels
+        quality_minimum: quality_scale.minimum,
+        quality_maximum: quality_scale.maximum,
+        quality_step: quality_scale.step,
+        speed_index: speed_options
             .iter()
             .position(|candidate| candidate == &speed)
             .unwrap_or_default(),
         speed,
         speed_labels,
+        speed_help: speed_help(encoder),
         show_speed: (matches!(encoder, Encoder::X264 | Encoder::X265 | Encoder::SvtAv1)
             || encoder.is_nvenc())
             && mode != ContentMode::Trim,
@@ -4973,7 +5067,10 @@ impl SlintController {
     }
 
     pub fn begin_task_draft(&mut self) {
-        self.task_draft = None;
+        self.task_draft = Some(SlintTaskDraft {
+            settings: self.app.current_settings(),
+            targets: Vec::new(),
+        });
         "Choose how this task should be converted".clone_into(&mut self.app.activity);
     }
 
@@ -5394,7 +5491,7 @@ impl SlintController {
     }
 
     pub fn set_quality(&mut self, quality: f32) {
-        self.app.quality_crf = quality.clamp(0.0, quality_maximum(self.app.encoder));
+        self.app.quality_crf = normalized_quality(self.app.encoder, quality);
         self.app.sync_preferences();
     }
 
@@ -5730,18 +5827,8 @@ impl SlintController {
             )
         };
         let live_status = slint_live_status(&self.app);
-        let task_settings = self
-            .app
-            .worker
-            .as_ref()
-            .and_then(|worker| self.app.queue.task(&worker.task_id))
-            .or_else(|| {
-                paused_between_files
-                    .then_some(self.app.selected_id.as_deref())
-                    .flatten()
-                    .and_then(|id| self.app.queue.task(id))
-            })
-            .map(|task| &task.settings);
+        let task_settings =
+            displayed_task_settings(&self.app, paused_between_files, self.task_draft.is_some());
         let settings = slint_settings_snapshot(&self.app, task_settings);
         let (task_draft_targets, task_draft_summary, task_draft_output_summary) =
             self.task_draft.as_ref().map_or_else(
@@ -8319,9 +8406,9 @@ mod tests {
         ReviewWorkerRequest, SlintController, SlintTaskDraft, StreamCarryInfo, TaskDisplayCounts,
         WatchedFolder, active_item_position, camera_run_info_from_media,
         cleanup_temporary_directory, collect_new_video_task_targets, collect_video_files,
-        completed_history_row, default_task_name, encoded_source_matches_fps,
-        encoding_ui_settings_for, estimated_output_bytes, estimated_remaining,
-        expanded_task_targets, explicit_fps, finalize_conversion,
+        completed_history_row, default_task_name, displayed_task_settings,
+        encoded_source_matches_fps, encoding_ui_settings_for, estimated_output_bytes,
+        estimated_remaining, expanded_task_targets, explicit_fps, finalize_conversion,
         finalize_conversion_replacing_output, folder_queue_summary,
         folder_queue_summary_with_failures, folder_snapshot_for_settings, folder_summary_status,
         format_carried_audio, format_carried_subtitles, format_clock, format_ffmpeg_progress_clock,
@@ -8793,12 +8880,75 @@ mod tests {
         assert!((x264.quality_maximum - 51.0).abs() < f32::EPSILON);
         assert!((x265.quality_maximum - 51.0).abs() < f32::EPSILON);
         assert!((svt_av1.quality_maximum - 63.0).abs() < f32::EPSILON);
+        assert!((x264.quality_minimum - 0.0).abs() < f32::EPSILON);
+        assert!((x265.quality_minimum - 0.0).abs() < f32::EPSILON);
+        assert!((svt_av1.quality_minimum - 0.0).abs() < f32::EPSILON);
+        assert!((x264.quality_step - 1.0).abs() < f32::EPSILON);
+        assert!((x265.quality_step - 1.0).abs() < f32::EPSILON);
+        assert!((svt_av1.quality_step - 1.0).abs() < f32::EPSILON);
         assert_eq!(x264.quality_level, "Balanced");
         assert_eq!(x265.quality_level, "Balanced");
         assert_eq!(svt_av1.quality_level, "Balanced");
         assert_eq!(x264.quality_guide_labels[2], "23\u{2013}27\nBalanced");
         assert_eq!(x265.quality_guide_labels[2], "26\u{2013}31\nBalanced");
-        assert_eq!(svt_av1.quality_guide_labels[2], "32\u{2013}39\nBalanced");
+        assert_eq!(svt_av1.quality_guide_labels[2], "28\u{2013}35\nBalanced");
+        assert!((super::normalized_quality(Encoder::X264, 51.4) - 51.0).abs() < f32::EPSILON);
+        assert!((super::normalized_quality(Encoder::X265, 21.3) - 21.0).abs() < f32::EPSILON);
+        assert!((super::normalized_quality(Encoder::SvtAv1, 35.5) - 36.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn nvidia_preset_labels_explain_the_speed_and_quality_tradeoff() {
+        let labels = super::speed_option_labels(Encoder::H264Nvenc);
+
+        assert_eq!(labels[0], "P1 · Fastest");
+        assert_eq!(labels[3], "P4 · Medium (default)");
+        assert_eq!(labels[6], "P7 · Highest quality");
+        assert_eq!(
+            super::speed_help(Encoder::H264Nvenc),
+            "P1 is fastest, P4 is medium, and P7 gives the highest quality."
+        );
+    }
+
+    #[test]
+    fn new_task_codec_quality_overrides_the_active_task_display() {
+        let active_task = QueueTask::new(
+            "active",
+            "Active",
+            vec!["active.mp4".into()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        let mut queue = Queue::default();
+        queue.add(active_task).unwrap();
+        let app = ConverterApp {
+            queue,
+            selected_id: Some("active".to_owned()),
+            mode: ContentMode::Tv,
+            encoder: Encoder::SvtAv1,
+            quality_crf: 35.0,
+            available_encoders: vec![Encoder::X265, Encoder::SvtAv1],
+            queue_run_state: QueueRunState::PausedBetweenFiles,
+            ..ConverterApp::default()
+        };
+
+        let active_settings = displayed_task_settings(&app, true, false);
+        let active_snapshot = slint_settings_snapshot(&app, active_settings);
+        assert_eq!(
+            active_snapshot.encoder_labels[active_snapshot.encoder_index],
+            "x265"
+        );
+
+        let editing_settings = displayed_task_settings(&app, true, true);
+        let editing_snapshot = slint_settings_snapshot(&app, editing_settings);
+        assert_eq!(
+            editing_snapshot.encoder_labels[editing_snapshot.encoder_index],
+            "libsvtav1"
+        );
+        assert!((editing_snapshot.quality - 35.0).abs() < f32::EPSILON);
+        assert_eq!(
+            editing_snapshot.quality_guide_labels[2],
+            "28\u{2013}35\nBalanced"
+        );
     }
 
     #[test]

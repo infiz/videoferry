@@ -802,9 +802,12 @@ export component AppWindow inherits Window {
     in property <bool> show-quality: true;
     in property <string> quality-level: "Balanced";
     in property <[string]> quality-guide-labels;
+    in property <float> quality-minimum: 0;
     in property <float> quality-maximum: 63;
+    in property <float> quality-step: 1;
     in property <string> speed: "medium";
     in property <[string]> speed-labels;
+    in property <string> speed-help: "Slower settings usually make a smaller file but take longer.";
     in property <int> speed-index: 0;
     in property <bool> show-speed: true;
     in property <bool> prevent-sleep: true;
@@ -870,6 +873,7 @@ export component AppWindow inherits Window {
     in-out property <int> drag-target-index: -1;
     in-out property <length> task-file-path-width: 360px;
     in-out property <length> task-file-scroll-y: 0px;
+    in-out property <bool> settings-refreshing: false;
     property <bool> settings-editable: root.task-builder-open || !root.is-running;
     property <bool> narrow-live-controls: root.width < 960px;
     property <length> live-panel-height: (root.live-details-expanded && !root.paused-between-files ? 252px : 166px) + (root.narrow-live-controls ? 50px : 0px);
@@ -1662,7 +1666,7 @@ export component AppWindow inherits Window {
         background: #0000008c;
         TouchArea {
             clicked => {
-                if (!root.task-builder-open) {
+                if (!root.task-builder-open && root.settings-editable) {
                     root.settings-open = false;
                 }
             }
@@ -1755,7 +1759,8 @@ export component AppWindow inherits Window {
                 height: parent.height - (root.task-builder-open ? 174px : 102px);
                 VerticalLayout {
                     padding-right: 10px;
-                    spacing: 16px;
+                    spacing: 10px;
+                    alignment: start;
                     Text { text: "Choose a workflow"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
                     GridLayout {
                         spacing: 8px;
@@ -1785,26 +1790,40 @@ export component AppWindow inherits Window {
                     Rectangle { height: 1px; vertical-stretch: 0; background: #2a2a31; }
 
                     if root.show-encoder: VerticalLayout {
-                        spacing: 8px;
+                        vertical-stretch: 0;
+                        spacing: 0px;
                         Text { text: "Video codec"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
                         ComboBox {
+                            height: 38px;
+                            vertical-stretch: 0;
                             accessible-label: "Video codec";
                             enabled: root.settings-editable;
                             model: root.encoder-labels;
                             current-index: root.encoder-index;
-                            selected(value) => { root.set-encoder(self.current-index); }
+                            selected(value) => {
+                                if (!root.settings-refreshing) {
+                                    root.set-encoder(self.current-index);
+                                }
+                            }
                         }
                     }
 
                     if root.show-fps: VerticalLayout {
-                        spacing: 8px;
+                        vertical-stretch: 0;
+                        spacing: 0px;
                         Text { text: "Frame rate"; color: #c9c9cf; font-size: 13px; font-weight: 650; vertical-stretch: 0; }
                         ComboBox {
+                            height: 38px;
+                            vertical-stretch: 0;
                             accessible-label: "Frame rate";
                             enabled: root.settings-editable;
                             model: root.fps-labels;
                             current-index: root.fps-index;
-                            selected(value) => { root.set-fps-mode(self.current-index); }
+                            selected(value) => {
+                                if (!root.settings-refreshing) {
+                                    root.set-fps-mode(self.current-index);
+                                }
+                            }
                         }
                         if root.show-explicit-fps: VerticalLayout {
                             spacing: 5px;
@@ -1819,7 +1838,11 @@ export component AppWindow inherits Window {
                                 maximum: 120;
                                 value: root.explicit-fps;
                                 step: 0.001;
-                                changed(value) => { root.set-explicit-fps(value); }
+                                changed(value) => {
+                                    if (!root.settings-refreshing) {
+                                        root.set-explicit-fps(value);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1829,7 +1852,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             Text { text: "Picture quality"; color: #c9c9cf; font-size: 13px; font-weight: 650; }
                             Text {
-                                text: root.quality-level + "  ·  " + round(root.quality * 10) / 10 + " CRF";
+                                text: root.quality-level + "  ·  " + round(root.quality) + " CRF";
                                 color: #ff6973;
                                 font-size: 12px;
                                 font-weight: 650;
@@ -1857,11 +1880,15 @@ export component AppWindow inherits Window {
                         Slider {
                             accessible-label: "Picture quality (CRF)";
                             enabled: root.settings-editable;
-                            minimum: 0;
+                            minimum: root.quality-minimum;
                             maximum: root.quality-maximum;
                             value: root.quality;
-                            step: 0.5;
-                            changed(value) => { root.set-quality(value); }
+                            step: root.quality-step;
+                            changed(value) => {
+                                if (!root.settings-refreshing) {
+                                    root.set-quality(value);
+                                }
+                            }
                         }
                         Text { text: "Lower values keep more detail and create larger files."; color: #74747e; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
                     }
@@ -1885,10 +1912,14 @@ export component AppWindow inherits Window {
                                     enabled: root.settings-editable;
                                     model: root.speed-labels;
                                     current-index: root.speed-index;
-                                    selected(value) => { root.set-speed(self.current-index); }
+                                    selected(value) => {
+                                        if (!root.settings-refreshing) {
+                                            root.set-speed(self.current-index);
+                                        }
+                                    }
                                 }
                             }
-                            Text { text: "Slower settings usually make a smaller file but take longer."; color: #74747e; font-size: 10px; vertical-stretch: 0; }
+                            Text { text: root.speed-help; color: #74747e; font-size: 10px; vertical-stretch: 0; }
                         }
                     }
 
@@ -1942,7 +1973,11 @@ export component AppWindow inherits Window {
                             enabled: root.settings-editable;
                             model: ["Gentle", "Balanced", "Steady", "Strong", "Maximum"];
                             current-index: root.stabilize-index;
-                            selected(value) => { root.set-stabilize-strength(self.current-index); }
+                            selected(value) => {
+                                if (!root.settings-refreshing) {
+                                    root.set-stabilize-strength(self.current-index);
+                                }
+                            }
                         }
                         Text { text: "Uses native two-pass stabilization when available."; color: #74747e; font-size: 11px; wrap: word-wrap; }
                     }
@@ -1960,7 +1995,11 @@ export component AppWindow inherits Window {
                             maximum: 30;
                             value: root.slideshow-interval;
                             step: 0.5;
-                            changed(value) => { root.set-slideshow-interval(value); }
+                            changed(value) => {
+                                if (!root.settings-refreshing) {
+                                    root.set-slideshow-interval(value);
+                                }
+                            }
                         }
                         VerticalLayout {
                             spacing: 5px;
@@ -1982,7 +2021,11 @@ export component AppWindow inherits Window {
                                 enabled: root.settings-editable;
                                 model: ["1080p (1920×1080)", "4K (3840×2160)"];
                                 current-index: root.slideshow-resolution-index;
-                                selected(value) => { root.set-slideshow-resolution(self.current-index); }
+                                selected(value) => {
+                                    if (!root.settings-refreshing) {
+                                        root.set-slideshow-resolution(self.current-index);
+                                    }
+                                }
                             }
                         }
                         Switch {

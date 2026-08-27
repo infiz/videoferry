@@ -1559,7 +1559,7 @@ fn frame_count(duration: Duration, fps: u32) -> Result<u32, EngineError> {
 fn encoder_options(settings: &QueueSettings) -> ffmpeg::Dictionary<'static> {
     let mut options = ffmpeg::Dictionary::new();
     if let Some(quality) = settings.quality {
-        options.set("crf", &format!("{quality:.2}"));
+        options.set("crf", &format!("{quality:.0}"));
     }
     if let Some(preset) = &settings.speed_preset {
         options.set("preset", preset);

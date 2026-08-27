@@ -659,6 +659,46 @@ fn refresh_task_file_rows(ui: &AppWindow, files: &[SlintTaskFileSnapshot], sort:
     ui.set_selected_task_metric_rows(model(metric_rows));
 }
 
+fn refresh_settings(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
+    ui.set_settings_refreshing(true);
+    ui.set_mode_labels(model(strings(&snapshot.settings.mode_labels)));
+    ui.set_encoder_labels(model(strings(&snapshot.settings.encoder_labels)));
+    ui.set_mode_index(i32::try_from(snapshot.settings.mode_index).unwrap_or_default());
+    ui.set_encoder_index(i32::try_from(snapshot.settings.encoder_index).unwrap_or_default());
+    ui.set_show_encoder(snapshot.settings.show_encoder);
+    ui.set_fps_labels(model(strings(&snapshot.settings.fps_labels)));
+    ui.set_fps_index(i32::try_from(snapshot.settings.fps_index).unwrap_or_default());
+    ui.set_show_fps(snapshot.settings.show_fps);
+    ui.set_explicit_fps(snapshot.settings.explicit_fps);
+    ui.set_show_explicit_fps(snapshot.settings.show_explicit_fps);
+    ui.set_quality(snapshot.settings.quality);
+    ui.set_show_quality(snapshot.settings.show_quality);
+    ui.set_quality_level(SharedString::from(&snapshot.settings.quality_level));
+    ui.set_quality_guide_labels(model(strings(&snapshot.settings.quality_guide_labels)));
+    ui.set_quality_minimum(snapshot.settings.quality_minimum);
+    ui.set_quality_maximum(snapshot.settings.quality_maximum);
+    ui.set_quality_step(snapshot.settings.quality_step);
+    ui.set_speed(SharedString::from(&snapshot.settings.speed));
+    ui.set_speed_index(i32::try_from(snapshot.settings.speed_index).unwrap_or_default());
+    ui.set_speed_labels(model(strings(&snapshot.settings.speed_labels)));
+    ui.set_speed_help(SharedString::from(&snapshot.settings.speed_help));
+    ui.set_show_speed(snapshot.settings.show_speed);
+    ui.set_prevent_sleep(snapshot.settings.prevent_sleep);
+    ui.set_trim_start(SharedString::from(&snapshot.settings.trim_start));
+    ui.set_trim_end(SharedString::from(&snapshot.settings.trim_end));
+    ui.set_apply_lut(snapshot.settings.apply_lut);
+    ui.set_stabilize_index(i32::try_from(snapshot.settings.stabilize_index).unwrap_or_default());
+    ui.set_slideshow_interval(snapshot.settings.slideshow_interval);
+    ui.set_slideshow_fps(snapshot.settings.slideshow_fps);
+    ui.set_slideshow_resolution_index(
+        i32::try_from(snapshot.settings.slideshow_resolution_index).unwrap_or_default(),
+    );
+    ui.set_slideshow_collage(snapshot.settings.slideshow_collage);
+    ui.set_slideshow_audio_labels(model(strings(&snapshot.settings.slideshow_audio_labels)));
+    ui.set_slideshow_audio_selected(snapshot.settings.slideshow_audio_selected);
+    ui.set_settings_refreshing(false);
+}
+
 fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFileSort) {
     let tasks = snapshot.tasks.iter().map(task_item).collect::<Vec<_>>();
     let history = snapshot
@@ -677,38 +717,7 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFile
     ui.set_selected_task_title(SharedString::from(&snapshot.selected_task_title));
     refresh_task_file_rows(ui, &snapshot.selected_task_files, task_file_sort);
     ui.set_history(model(history));
-    ui.set_mode_labels(model(strings(&snapshot.settings.mode_labels)));
-    ui.set_encoder_labels(model(strings(&snapshot.settings.encoder_labels)));
-    ui.set_mode_index(i32::try_from(snapshot.settings.mode_index).unwrap_or_default());
-    ui.set_encoder_index(i32::try_from(snapshot.settings.encoder_index).unwrap_or_default());
-    ui.set_show_encoder(snapshot.settings.show_encoder);
-    ui.set_fps_labels(model(strings(&snapshot.settings.fps_labels)));
-    ui.set_fps_index(i32::try_from(snapshot.settings.fps_index).unwrap_or_default());
-    ui.set_show_fps(snapshot.settings.show_fps);
-    ui.set_explicit_fps(snapshot.settings.explicit_fps);
-    ui.set_show_explicit_fps(snapshot.settings.show_explicit_fps);
-    ui.set_quality(snapshot.settings.quality);
-    ui.set_show_quality(snapshot.settings.show_quality);
-    ui.set_quality_level(SharedString::from(&snapshot.settings.quality_level));
-    ui.set_quality_guide_labels(model(strings(&snapshot.settings.quality_guide_labels)));
-    ui.set_quality_maximum(snapshot.settings.quality_maximum);
-    ui.set_speed(SharedString::from(&snapshot.settings.speed));
-    ui.set_speed_labels(model(strings(&snapshot.settings.speed_labels)));
-    ui.set_speed_index(i32::try_from(snapshot.settings.speed_index).unwrap_or_default());
-    ui.set_show_speed(snapshot.settings.show_speed);
-    ui.set_prevent_sleep(snapshot.settings.prevent_sleep);
-    ui.set_trim_start(SharedString::from(&snapshot.settings.trim_start));
-    ui.set_trim_end(SharedString::from(&snapshot.settings.trim_end));
-    ui.set_apply_lut(snapshot.settings.apply_lut);
-    ui.set_stabilize_index(i32::try_from(snapshot.settings.stabilize_index).unwrap_or_default());
-    ui.set_slideshow_interval(snapshot.settings.slideshow_interval);
-    ui.set_slideshow_fps(snapshot.settings.slideshow_fps);
-    ui.set_slideshow_resolution_index(
-        i32::try_from(snapshot.settings.slideshow_resolution_index).unwrap_or_default(),
-    );
-    ui.set_slideshow_collage(snapshot.settings.slideshow_collage);
-    ui.set_slideshow_audio_labels(model(strings(&snapshot.settings.slideshow_audio_labels)));
-    ui.set_slideshow_audio_selected(snapshot.settings.slideshow_audio_selected);
+    refresh_settings(ui, snapshot);
     ui.set_activity(SharedString::from(&snapshot.activity));
     ui.set_engine_status(SharedString::from(&snapshot.engine_status));
     ui.set_active_title(SharedString::from(&snapshot.active_title));

@@ -175,6 +175,109 @@ component TextButton inherits Rectangle {
     }
 }
 
+component FiveStopSlider inherits Rectangle {
+    in-out property <int> value: 4;
+    private property <length> first-stop-x: 7px;
+    private property <length> stop-range: max(0px, root.width - 14px);
+    callback changed(int);
+
+    height: 20px;
+    background: transparent;
+    accessible-role: slider;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 4;
+    accessible-value: root.value;
+    forward-focus: focus;
+
+    track := Rectangle {
+        x: 0px;
+        y: (parent.height - self.height) / 2;
+        width: root.width;
+        height: 3px;
+        border-radius: 2px;
+        background: #3b3b44;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.first-stop-x + root.stop-range * root.value / 4;
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: #e50914;
+            animate width { duration: 90ms; easing: ease-out; }
+        }
+    }
+
+    for dot-index in [0, 1, 2, 3, 4]: Rectangle {
+        property <bool> selected: dot-index == root.value;
+        width: selected ? 14px : 10px;
+        height: self.width;
+        x: root.first-stop-x + root.stop-range * dot-index / 4 - self.width / 2;
+        y: (root.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: dot-index <= root.value ? #e50914 : #555560;
+        border-width: selected ? 3px : 2px;
+        border-color: selected ? #ffffff : #18181d;
+        animate width, height, background, border-color { duration: 90ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.button != PointerEventButton.left) {
+                return;
+            }
+            if (event.kind == PointerEventKind.down || event.kind == PointerEventKind.up) {
+                focus.focus();
+                root.set-nearest(self.mouse-x);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.set-nearest(self.mouse-x);
+            }
+        }
+    }
+
+    focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                root.set-value(root.value + 1);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                root.set-value(root.value - 1);
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.set-value(0);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.set-value(4);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    public function set-nearest(position: length) {
+        if (root.stop-range > 0px) {
+            root.set-value(round((position - root.first-stop-x) * 4 / root.stop-range));
+        }
+    }
+
+    public function set-value(next-value: int) {
+        let snapped-value = max(0, min(4, next-value));
+        if (snapped-value != root.value) {
+            root.value = snapped-value;
+            root.changed(snapped-value);
+        }
+    }
+}
+
 component HoverText inherits Rectangle {
     in property <string> text;
     in property <brush> text-color: #ffffff;
@@ -1509,30 +1612,24 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
-                        HorizontalLayout {
+                        Rectangle {
                             height: 14px;
                             vertical-stretch: 0;
-                            spacing: 2px;
-                            for label in ["Eco", "Low", "Balanced", "High", "Maximum"]: Rectangle {
-                                background: transparent;
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: label;
-                                    color: #8d8d97;
-                                    font-size: 9px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
+                            background: transparent;
+                            for label[index] in ["Eco", "Low", "Balanced", "High", "Maximum"]: Text {
+                                width: self.preferred-width;
+                                x: max(0px, min(parent.width - self.width, 7px + (parent.width - 14px) * index / 4 - self.width / 2));
+                                text: label;
+                                color: #8d8d97;
+                                font-size: 9px;
+                                vertical-alignment: center;
                             }
                         }
-                        Slider {
+                        FiveStopSlider {
                             height: 20px;
                             accessible-label: "CPU use: " + root.cpu-limit-summary;
-                            minimum: 0;
-                            maximum: 4;
                             value: root.cpu-limit-index;
-                            step: 1;
-                            changed(value) => { root.set-cpu-limit(round(value)); }
+                            changed(value) => { root.set-cpu-limit(value); }
                         }
                     }
                     if !root.narrow-live-controls: HorizontalLayout {

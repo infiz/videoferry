@@ -46,14 +46,15 @@ mod tests {
     fn gui_font_chain_contains_common_unicode_glyphs() {
         let context = Context::default();
         install(&context);
-        let _ = context.run(RawInput::default(), |_| {});
+        let mut output = context.run_ui(RawInput::default(), |_| {});
+        output.textures_delta.clear();
 
-        assert!(context.fonts(|fonts| fonts.has_glyphs(
+        assert!(context.fonts_mut(|fonts| fonts.has_glyphs(
             &FontId::proportional(14.0),
             "中文文件名 · 繁體中文 · 日本語 · 한국어 · Русский · Ελληνικά · ✓"
         )));
-        assert!(context.fonts(|fonts| {
-            fonts.has_glyphs(&FontId::monospace(14.0), "D:\\影片\\家庭视频_第01集.mkv")
+        assert!(context.fonts_mut(|fonts| {
+            fonts.has_glyphs(&FontId::monospace(14.0), "影片家庭视频第集")
         }));
     }
 }

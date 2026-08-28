@@ -7,6 +7,9 @@ use videoferry_core::{
     MediaEngine, MediaInfo,
 };
 
+mod cpu_limit;
+pub use cpu_limit::ProcessCpuLimiter;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhotoThumbnail {
     pub width: u32,

@@ -12,6 +12,7 @@ struct ControlState {
     paused: bool,
     pause_after_current: bool,
     preview_enabled: bool,
+    cpu_thread_limit: usize,
     stop: StopRequest,
 }
 
@@ -77,6 +78,15 @@ impl ConversionControl {
 
     pub fn set_preview_enabled(&self, enabled: bool) {
         self.lock_state().preview_enabled = enabled;
+    }
+
+    pub fn set_cpu_thread_limit(&self, threads: usize) {
+        self.lock_state().cpu_thread_limit = threads;
+    }
+
+    #[must_use]
+    pub fn cpu_thread_limit(&self) -> usize {
+        self.lock_state().cpu_thread_limit
     }
 
     #[must_use]
@@ -152,5 +162,15 @@ mod tests {
         assert!(control.preview_enabled());
         control.set_preview_enabled(false);
         assert!(!control.preview_enabled());
+    }
+
+    #[test]
+    fn cpu_thread_limit_can_change_while_work_is_active() {
+        let control = ConversionControl::new();
+        assert_eq!(control.cpu_thread_limit(), 0);
+        control.set_cpu_thread_limit(6);
+        assert_eq!(control.cpu_thread_limit(), 6);
+        control.set_cpu_thread_limit(0);
+        assert_eq!(control.cpu_thread_limit(), 0);
     }
 }

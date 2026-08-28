@@ -840,6 +840,8 @@ export component AppWindow inherits Window {
     in property <string> live-spent: "-";
     in property <string> live-estimated-total: "-";
     in property <string> live-remaining: "-";
+    in property <int> cpu-limit-index: 4;
+    in property <string> cpu-limit-summary: "Maximum · 100%";
     in property <float> progress: 0;
     in property <bool> is-running: false;
     in property <bool> is-paused: false;
@@ -876,7 +878,7 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-refreshing: false;
     property <bool> settings-editable: root.task-builder-open || !root.is-running;
     property <bool> narrow-live-controls: root.width < 960px;
-    property <length> live-panel-height: (root.live-details-expanded && !root.paused-between-files ? 252px : 166px) + (root.narrow-live-controls ? 50px : 0px);
+    property <length> live-panel-height: (root.live-details-expanded && !root.paused-between-files ? 312px : 226px) + (root.narrow-live-controls ? 50px : 0px);
 
     callback begin-task;
     callback prepare-task() -> bool;
@@ -902,6 +904,7 @@ export component AppWindow inherits Window {
     callback dismiss-completion;
     callback toggle-pause;
     callback set-live-preview(bool);
+    callback set-cpu-limit(int);
     callback pause-after-current;
     callback stop-current;
     callback stop-all;
@@ -1481,6 +1484,55 @@ export component AppWindow inherits Window {
                                     background: @linear-gradient(90deg, #e50914 0%, #ff6570 100%);
                                 }
                             }
+                        }
+                    }
+                    VerticalLayout {
+                        height: 54px;
+                        vertical-stretch: 0;
+                        spacing: 2px;
+                        HorizontalLayout {
+                            height: 16px;
+                            vertical-stretch: 0;
+                            Text {
+                                text: "CPU use";
+                                color: #aaaab5;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.cpu-limit-summary;
+                                color: #ff6973;
+                                font-size: 11px;
+                                font-weight: 650;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 14px;
+                            vertical-stretch: 0;
+                            spacing: 2px;
+                            for label in ["Eco", "Low", "Balanced", "High", "Maximum"]: Rectangle {
+                                background: transparent;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: label;
+                                    color: #8d8d97;
+                                    font-size: 9px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Slider {
+                            height: 20px;
+                            accessible-label: "CPU use: " + root.cpu-limit-summary;
+                            minimum: 0;
+                            maximum: 4;
+                            value: root.cpu-limit-index;
+                            step: 1;
+                            changed(value) => { root.set-cpu-limit(round(value)); }
                         }
                     }
                     if !root.narrow-live-controls: HorizontalLayout {

@@ -137,7 +137,14 @@ pub(super) fn write_video_transcode(
         .map_err(|error| EngineError::InvalidMedia(format!("{}: {error}", input_path.display())))?;
     let mut output = ffmpeg::format::output(partial.path()).map_err(ffmpeg_failure)?;
 
-    let mut setup = create_output_streams(&input, &mut output, plan, spec, stabilization.as_ref())?;
+    let mut setup = create_output_streams(
+        &input,
+        &mut output,
+        plan,
+        spec,
+        stabilization.as_ref(),
+        control,
+    )?;
     copy_container_context(&input, &mut output, spec.settings.metadata)?;
     output
         .write_header()
@@ -274,6 +281,7 @@ fn create_output_streams(
     plan: &StreamPlan,
     spec: TranscodeSpec<'_>,
     stabilization: Option<&StabilizationPlan>,
+    control: &ConversionControl,
 ) -> Result<OutputSetup, EngineError> {
     let selected = selected_streams(plan);
     let stream_count = usize::try_from(input.nb_streams())
@@ -298,10 +306,9 @@ fn create_output_streams(
                 &input_stream,
                 output,
                 output_index,
-                spec.settings,
-                spec.target_frame_rate,
-                spec.progress,
+                spec,
                 stabilization,
+                control.cpu_thread_limit(),
             )?);
         } else if let Some(AudioStreamAction::TranscodeAc3 { bit_rate }) = plan
             .audio
@@ -377,14 +384,18 @@ impl VideoTranscoder {
         input: &ffmpeg::Stream<'_>,
         output: &mut ffmpeg::format::context::Output,
         output_index: usize,
-        settings: &QueueSettings,
-        target_frame_rate: Option<ffmpeg::Rational>,
-        progress: ProgressMetadata,
+        spec: TranscodeSpec<'_>,
         stabilization: Option<&StabilizationPlan>,
+        cpu_thread_limit: usize,
     ) -> Result<Self, EngineError> {
-        let decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())
-            .and_then(|context| context.decoder().video())
-            .map_err(ffmpeg_failure)?;
+        let settings = spec.settings;
+        let target_frame_rate = spec.target_frame_rate;
+        let progress = spec.progress;
+        let mut decoder_context =
+            ffmpeg::codec::context::Context::from_parameters(input.parameters())
+                .map_err(ffmpeg_failure)?;
+        apply_cpu_thread_limit(&mut decoder_context, cpu_thread_limit);
+        let decoder = decoder_context.decoder().video().map_err(ffmpeg_failure)?;
         let codec =
             ffmpeg::encoder::find_by_name(settings.encoder.library_name()).ok_or_else(|| {
                 EngineError::Unavailable(format!(
@@ -407,6 +418,10 @@ impl VideoTranscoder {
             .encoder()
             .video()
             .map_err(ffmpeg_failure)?;
+        apply_cpu_thread_limit(
+            &mut encoder,
+            encoder_cpu_thread_limit(settings.encoder, cpu_thread_limit),
+        );
         let width = (decoder.width() + 1) & !1;
         let height = (decoder.height() + 1) & !1;
         let stream_frame_rate = input.rate();
@@ -883,6 +898,23 @@ fn encoder_options(settings: &QueueSettings) -> ffmpeg::Dictionary<'static> {
     options
 }
 
+fn apply_cpu_thread_limit(context: &mut ffmpeg::codec::context::Context, cpu_thread_limit: usize) {
+    if cpu_thread_limit > 0 {
+        context.set_threading(ffmpeg::codec::threading::Config::count(cpu_thread_limit));
+    }
+}
+
+fn encoder_cpu_thread_limit(encoder: videoferry_core::Encoder, cpu_thread_limit: usize) -> usize {
+    // FFmpeg maps this field to x265 frame threads, whose supported maximum is
+    // lower than the logical-CPU counts common on current systems. Process
+    // affinity still enforces the user's full CPU selection on Windows.
+    if matches!(encoder, videoferry_core::Encoder::X265) {
+        cpu_thread_limit.min(16)
+    } else {
+        cpu_thread_limit
+    }
+}
+
 fn needs_hvc1_tag(encoder: videoferry_core::Encoder, output_format: &str) -> bool {
     encoder.is_hevc() && output_format.split(',').any(|name| name == "mp4")
 }
@@ -931,8 +963,8 @@ mod tests {
     use videoferry_core::{Encoder, QueueSettings};
 
     use super::{
-        effective_color_range, ffmpeg_filter_path, fitted_dimensions, needs_hvc1_tag,
-        nominal_frame_rate, preview_is_due, video_filter_chain,
+        effective_color_range, encoder_cpu_thread_limit, ffmpeg_filter_path, fitted_dimensions,
+        needs_hvc1_tag, nominal_frame_rate, preview_is_due, video_filter_chain,
     };
 
     #[test]
@@ -964,6 +996,13 @@ mod tests {
             assert!(!needs_hvc1_tag(encoder, "matroska,webm"));
         }
         assert!(!needs_hvc1_tag(Encoder::H264VideoToolbox, "mp4"));
+    }
+
+    #[test]
+    fn x265_frame_threads_stay_within_the_encoder_limit() {
+        assert_eq!(encoder_cpu_thread_limit(Encoder::X265, 32), 16);
+        assert_eq!(encoder_cpu_thread_limit(Encoder::X265, 8), 8);
+        assert_eq!(encoder_cpu_thread_limit(Encoder::X264, 32), 32);
     }
 
     #[test]

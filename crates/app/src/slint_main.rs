@@ -371,6 +371,13 @@ fn wire_queue_callbacks(
 fn wire_settings_callbacks(ui: &AppWindow, controller: &Rc<RefCell<SlintController>>) {
     wire_audio_callbacks(ui, controller);
 
+    let cpu_limit_controller = Rc::clone(controller);
+    ui.on_set_cpu_limit(move |index| {
+        if let Some(index) = valid_index(index) {
+            cpu_limit_controller.borrow_mut().set_cpu_limit(index);
+        }
+    });
+
     let mode_controller = Rc::clone(controller);
     ui.on_set_mode(move |index| {
         if let Some(index) = valid_index(index) {
@@ -737,6 +744,8 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFile
     ui.set_live_spent(SharedString::from(&snapshot.live_status.spent));
     ui.set_live_estimated_total(SharedString::from(&snapshot.live_status.estimated_total));
     ui.set_live_remaining(SharedString::from(&snapshot.live_status.remaining));
+    ui.set_cpu_limit_index(i32::try_from(snapshot.cpu_limit_index).unwrap_or(4));
+    ui.set_cpu_limit_summary(SharedString::from(&snapshot.cpu_limit_summary));
     ui.set_progress(snapshot.progress);
     ui.set_is_running(snapshot.is_running);
     ui.set_is_paused(snapshot.is_paused);

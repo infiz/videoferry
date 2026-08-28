@@ -17,13 +17,13 @@
     #define InstallerAppName "VideoFerry"
 #endif
 #if InstallerAppVersion == ""
-    #define InstallerAppVersion "1.0.3"
+    #define InstallerAppVersion "1.0.4"
 #endif
 #if InstallerDefaultDir == ""
     #define InstallerDefaultDir "{localappdata}\Programs\VideoFerry"
 #endif
 #if InstallerBaseFilename == ""
-    #define InstallerBaseFilename "VideoFerrySetup-1.0.3-windows-x86_64"
+    #define InstallerBaseFilename "VideoFerrySetup-1.0.4-windows-x86_64"
 #endif
 #if InstallerCreateIcons == ""
     #define InstallerCreateIcons "1"

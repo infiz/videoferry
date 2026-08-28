@@ -716,11 +716,12 @@ fn engine_details() -> (String, Vec<Encoder>) {
 }
 
 impl eframe::App for ConverterApp {
-    fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_close_request(context);
-        self.poll_engine_discovery(context);
-        self.poll_worker(context);
-        self.poll_review_worker(context);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = ui.ctx().clone();
+        self.handle_close_request(&context);
+        self.poll_engine_discovery(&context);
+        self.poll_worker(&context);
+        self.poll_review_worker(&context);
         if self.close_state == CloseState::WaitingForWorker && self.worker.is_none() {
             self.close_state = CloseState::Open;
             context.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -728,12 +729,12 @@ impl eframe::App for ConverterApp {
         }
         if self.worker.is_none() && self.resume_task_id.take().is_some() {
             "Resuming persisted queue".clone_into(&mut self.activity);
-            self.start_queue(context);
+            self.start_queue(&context);
         }
-        self.handle_dropped_paths(context);
+        self.handle_dropped_paths(&context);
         self.refresh_folder_watches();
-        self.refresh_completed_history(context);
-        self.capture_activity_log(context);
+        self.refresh_completed_history(&context);
+        self.capture_activity_log(&context);
         let title = if self.worker.is_some() {
             "● VideoFerry [Converting]"
         } else {
@@ -742,14 +743,14 @@ impl eframe::App for ConverterApp {
         self.platform_indicator
             .set_converting(self.worker.is_some());
         context.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
-        egui::TopBottomPanel::top("toolbar").show(context, |ui| self.show_toolbar(ui));
-        egui::SidePanel::right("settings")
-            .default_width(300.0)
-            .show(context, |ui| self.show_settings(ui));
-        egui::TopBottomPanel::bottom("status").show(context, |ui| self.show_status(ui));
-        egui::CentralPanel::default().show(context, |ui| self.show_center(ui));
-        self.show_photo_review(context);
-        self.show_photo_viewer(context);
+        egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
+        egui::Panel::right("settings")
+            .default_size(300.0)
+            .show(ui, |ui| self.show_settings(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.show_status(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.show_center(ui));
+        self.show_photo_review(&context);
+        self.show_photo_viewer(&context);
         self.update_sleep_inhibitor();
         self.sync_preferences();
     }
@@ -991,7 +992,7 @@ impl ConverterApp {
                 .raw
                 .dropped_files
                 .iter()
-                .filter_map(|file| file.path.clone())
+                .map(|file| file.path().to_owned())
                 .collect::<Vec<_>>()
         });
         if !paths.is_empty() {
@@ -4636,7 +4637,7 @@ fn unavailable_task_file(path: &std::path::Path, status: &str) -> SlintTaskFileS
 
 fn completed_task_file(row: &CompletedHistoryRow) -> SlintTaskFileSnapshot {
     let columns = row.columns();
-    let path = row.input_path().unwrap_or(&columns[0]).to_owned();
+    let path = columns[0].clone();
     let codec = match (row.original_codec(), row.converted_codec()) {
         (Some(original), Some(converted)) if original != converted => {
             format!("{original} → {converted}")
@@ -4812,6 +4813,9 @@ fn selected_task_files(
     {
         let file = completed_task_file(row);
         seen.insert(file.path.to_lowercase());
+        if let Some(input_path) = row.input_path() {
+            seen.insert(input_path.to_lowercase());
+        }
         files.push(file);
     }
 
@@ -9195,6 +9199,7 @@ mod tests {
 
         let completed_files = selected_task_files(&task, &[configuration]);
         assert_eq!(completed_files.len(), 1);
+        assert_eq!(completed_files[0].path, "DJI_0001.mp4");
         assert_eq!(completed_files[0].status, "Completed");
         assert_eq!(completed_files[0].conversion_time, "1.00 min");
         assert_eq!(completed_files[0].codec, "h264 → hevc");
@@ -9211,6 +9216,45 @@ mod tests {
         assert_eq!(queued_files[0].status, "Queued");
         assert_eq!(queued_files[0].started_time, "-");
         assert_eq!(queued_files[0].original_size, "-");
+    }
+
+    #[test]
+    fn completed_task_details_replace_the_source_row_with_the_output_row() {
+        let root = temporary_test_directory("completed-task-output-row");
+        let input = root.join("episode.mkv");
+        let output = root.join("episode.mp4");
+        let original_directory = root.join("original");
+        std::fs::create_dir(&original_directory).unwrap();
+        std::fs::write(original_directory.join("episode.mkv"), b"source").unwrap();
+        std::fs::write(&output, b"converted").unwrap();
+
+        let task = QueueTask::new(
+            "tv-folder",
+            "TV folder",
+            vec![root.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        let history = completed_history_row(
+            &task,
+            &CompletedJob {
+                input,
+                output: output.clone(),
+                lut_name: None,
+                start_time: "start".to_owned(),
+                end_time: "end".to_owned(),
+                process_minutes: "1.00".to_owned(),
+                original: HistoryMediaInfo::default(),
+                converted: HistoryMediaInfo::default(),
+            },
+        );
+
+        let files = selected_task_files(&task, &[history]);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, output.display().to_string());
+        assert_eq!(files[0].title, "episode.mp4");
+        assert_eq!(files[0].status, "Completed");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

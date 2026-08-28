@@ -36,6 +36,19 @@ function Assert-SmokeChild([string]$Path) {
     }
 }
 
+function Read-JsonFile([string]$Path, [int]$Attempts = 40) {
+    $lastError = $null
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        try {
+            return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw $lastError
+}
+
 function Get-FileSha256([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)
     $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -535,13 +548,13 @@ try {
     Assert-Condition $moveUp.Current.IsEnabled 'Pending task cannot be reordered during conversion'
     Invoke-AppElement $moveUp
     Start-Sleep -Milliseconds 250
-    $stored = Get-Content -LiteralPath $queuePath -Raw | ConvertFrom-Json
+    $stored = Read-JsonFile $queuePath
     Assert-Condition ($stored.tasks[0].task_data_id -eq 'slint-package-smoke-waiting-task') 'Pending task reorder was not persisted during conversion'
     $elements = Get-AppElements $window
     $removePending = Assert-NamedControl $elements 'Remove selected' 'ControlType.Button'
     Invoke-AppElement $removePending
     Start-Sleep -Milliseconds 250
-    $stored = Get-Content -LiteralPath $queuePath -Raw | ConvertFrom-Json
+    $stored = Read-JsonFile $queuePath
     Assert-Condition ($stored.tasks.Count -eq 1) 'Pending task could not be removed during conversion'
     Assert-Condition ($stored.tasks[0].task_data_id -eq 'slint-package-smoke-task') 'Removing a pending task disturbed the active conversion'
 
@@ -550,14 +563,16 @@ try {
     $completed = $false
     for ($attempt = 0; $attempt -lt 240 -and -not $completed; $attempt++) {
         Start-Sleep -Milliseconds 250
-        $stored = Get-Content -LiteralPath $queuePath -Raw | ConvertFrom-Json
+        $stored = Read-JsonFile $queuePath
         $completed = $stored.tasks[0].status -eq 'completed'
     }
     Assert-Condition $completed 'Packaged direct conversion did not complete'
+    Assert-Condition ($null -eq $stored.tasks[0].error) "Packaged direct conversion completed with an error: $($stored.tasks[0].error)"
     $process.Refresh()
     Assert-Condition (-not $process.HasExited) 'Slint app exited after conversion'
 
     $outputDirectory = Join-Path $runRoot 'media (x265)'
+    Assert-Condition (Test-Path -LiteralPath $outputDirectory -PathType Container) 'Packaged conversion did not publish its completed folder'
     $outputs = @(Get-ChildItem -LiteralPath $outputDirectory -File -Filter '*.mkv')
     Assert-Condition ($outputs.Count -eq 1) 'Packaged conversion did not publish exactly one MKV'
     $backup = Join-Path $outputDirectory "original\${primaryUnicodeLabel}-smoke.mp4"

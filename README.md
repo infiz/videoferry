@@ -76,7 +76,7 @@ Build the macOS Apple Silicon application, portable ZIP, and installable DMG
 from the repository root:
 
 ```bash
-./scripts/build_mac.sh
+./scripts/build-mac.sh
 ```
 
 The entry point builds the pinned FFmpeg SDK on first use and then runs the

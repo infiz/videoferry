@@ -348,7 +348,7 @@ its ignored `.local` diagnostics.
 Build the Apple Silicon application, ZIP, and DMG on macOS:
 
 ```bash
-./scripts/build_mac.sh
+./scripts/build-mac.sh
 ```
 
 The top-level command builds the pinned FFmpeg SDK when it is not already

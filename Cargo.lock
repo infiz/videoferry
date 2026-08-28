@@ -5902,7 +5902,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videoferry-app"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "arboard",
  "eframe",
@@ -5925,21 +5925,22 @@ dependencies = [
 
 [[package]]
 name = "videoferry-core"
-version = "1.0.2"
+version = "1.0.3"
 
 [[package]]
 name = "videoferry-ffmpeg"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "ffmpeg-next",
  "sha2",
  "videoferry-core",
  "videoferry-presets",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "videoferry-presets"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "videoferry-core",
 ]

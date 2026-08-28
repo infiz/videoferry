@@ -97,6 +97,71 @@ pub(crate) struct AppPreferences {
     pub selected_mode: ContentMode,
     pub settings_by_mode: HashMap<ContentMode, QueueSettings>,
     pub prevent_system_sleep: bool,
+    pub cpu_limit: CpuLimitLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuLimitLevel {
+    Eco,
+    Low,
+    Balanced,
+    High,
+    Maximum,
+}
+
+impl CpuLimitLevel {
+    pub const ALL: [Self; 5] = [
+        Self::Eco,
+        Self::Low,
+        Self::Balanced,
+        Self::High,
+        Self::Maximum,
+    ];
+
+    pub const fn from_index(index: usize) -> Option<Self> {
+        if index < Self::ALL.len() {
+            Some(Self::ALL[index])
+        } else {
+            None
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Eco => 0,
+            Self::Low => 1,
+            Self::Balanced => 2,
+            Self::High => 3,
+            Self::Maximum => 4,
+        }
+    }
+
+    pub const fn percent(self) -> usize {
+        match self {
+            Self::Eco => 20,
+            Self::Low => 40,
+            Self::Balanced => 60,
+            Self::High => 80,
+            Self::Maximum => 100,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Eco => "Eco",
+            Self::Low => "Low",
+            Self::Balanced => "Balanced",
+            Self::High => "High",
+            Self::Maximum => "Maximum",
+        }
+    }
+
+    pub fn thread_limit(self, available: usize) -> usize {
+        available
+            .saturating_mul(self.percent())
+            .div_ceil(100)
+            .clamp(1, available.max(1))
+    }
 }
 
 impl Default for AppPreferences {
@@ -108,6 +173,7 @@ impl Default for AppPreferences {
                 .map(|mode| (mode, default_settings(mode, Encoder::X265)))
                 .collect(),
             prevent_system_sleep: true,
+            cpu_limit: CpuLimitLevel::Maximum,
         }
     }
 }
@@ -148,6 +214,8 @@ impl StateStore {
         };
         let mut preferences = AppPreferences {
             prevent_system_sleep: stored.prevent_system_sleep,
+            cpu_limit: CpuLimitLevel::from_index(stored.cpu_limit_level)
+                .unwrap_or(CpuLimitLevel::Maximum),
             ..AppPreferences::default()
         };
         for (mode_name, stored_settings) in stored.queue_settings_by_mode {
@@ -179,6 +247,7 @@ impl StateStore {
             &StoredAppSettings {
                 queue_settings_by_mode,
                 prevent_system_sleep: preferences.prevent_system_sleep,
+                cpu_limit_level: preferences.cpu_limit.index(),
             },
         )
     }
@@ -529,6 +598,12 @@ struct StoredAppSettings {
     queue_settings_by_mode: BTreeMap<String, StoredSettings>,
     #[serde(default = "default_true")]
     prevent_system_sleep: bool,
+    #[serde(default = "default_cpu_limit_level")]
+    cpu_limit_level: usize,
+}
+
+const fn default_cpu_limit_level() -> usize {
+    4
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -798,8 +873,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        AppPreferences, COMPLETED_HISTORY_FILE, CompletedHistoryRow, QUEUE_STATE_FILE, StateStore,
-        StoredSettings, backup_path, temporary_path,
+        AppPreferences, COMPLETED_HISTORY_FILE, CompletedHistoryRow, CpuLimitLevel,
+        QUEUE_STATE_FILE, StateStore, StoredAppSettings, StoredSettings, backup_path,
+        temporary_path,
     };
     use videoferry_core::{
         ContentMode, Encoder, FpsPolicy, MetadataPolicy, Queue, QueueSettings, QueueStatus,
@@ -899,6 +975,7 @@ mod tests {
         let mut preferences = AppPreferences {
             selected_mode: ContentMode::PhotoSlideshow,
             prevent_system_sleep: false,
+            cpu_limit: CpuLimitLevel::Balanced,
             ..AppPreferences::default()
         };
         preferences
@@ -921,6 +998,26 @@ mod tests {
         )
         .unwrap();
         assert!(value.get("selected_mode").is_none());
+        assert_eq!(value["cpu_limit_level"], 2);
+    }
+
+    #[test]
+    fn old_preferences_default_to_maximum_cpu() {
+        let stored: StoredAppSettings =
+            serde_json::from_str(r#"{"queue_settings_by_mode":{},"prevent_system_sleep":true}"#)
+                .unwrap();
+        assert_eq!(
+            CpuLimitLevel::from_index(stored.cpu_limit_level),
+            Some(CpuLimitLevel::Maximum)
+        );
+    }
+
+    #[test]
+    fn cpu_levels_have_five_increasing_limits() {
+        let thread_limits = CpuLimitLevel::ALL.map(|level| level.thread_limit(16));
+        assert_eq!(thread_limits, [4, 7, 10, 13, 16]);
+        assert_eq!(CpuLimitLevel::Balanced.label(), "Balanced");
+        assert_eq!(CpuLimitLevel::Balanced.percent(), 60);
     }
 
     #[test]

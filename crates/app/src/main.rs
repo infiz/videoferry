@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform_actions::{open_path_with_default_app, reveal_path_in_file_manager};
 use eframe::egui;
-use persistence::{AppPreferences, CompletedHistoryRow, StateStore};
+use persistence::{AppPreferences, CompletedHistoryRow, CpuLimitLevel, StateStore};
 use platform_indicator::PlatformIndicator;
 use videoferry_core::{
     Container, ContentMode, ControlDecision, ConversionControl, ConversionEvent, ConversionPreview,
@@ -20,6 +20,7 @@ use videoferry_core::{
     Queue, QueueSettings, QueueStatus, QueueTask, StreamKind, build_stream_plan,
     conversion_output_path, stabilized_output_path, trim_output_path,
 };
+use videoferry_ffmpeg::ProcessCpuLimiter;
 #[cfg(any(feature = "native-ffmpeg", test))]
 use videoferry_presets::dji_camera_profile;
 use videoferry_presets::{
@@ -144,6 +145,9 @@ struct ConverterApp {
     completed_history: Vec<CompletedHistoryRow>,
     next_history_refresh: Instant,
     sleep: SleepState,
+    cpu_limit: CpuLimitLevel,
+    persisted_cpu_limit: CpuLimitLevel,
+    cpu_limiter: ProcessCpuLimiter,
     watched_folders: Vec<WatchedFolder>,
     folder_summaries: Vec<FolderQueueSummary>,
     task_run_failures: HashMap<String, HashMap<PathBuf, String>>,
@@ -574,6 +578,8 @@ impl Default for ConverterApp {
         };
         let mode = preferences.selected_mode;
         let prevent_system_sleep = preferences.prevent_system_sleep;
+        let cpu_limit = preferences.cpu_limit;
+        let cpu_limiter = ProcessCpuLimiter::new();
         let encoding_settings = preferences
             .settings_by_mode
             .values()
@@ -649,6 +655,9 @@ impl Default for ConverterApp {
                 persisted_enabled: prevent_system_sleep,
                 inhibitor: None,
             },
+            cpu_limit,
+            persisted_cpu_limit: cpu_limit,
+            cpu_limiter,
             watched_folders,
             folder_summaries,
             task_run_failures,
@@ -3766,20 +3775,39 @@ impl ConverterApp {
         if settings_changed
             || self.persisted_mode != self.mode
             || self.sleep.persisted_enabled != self.sleep.enabled
+            || self.persisted_cpu_limit != self.cpu_limit
         {
             let preferences = AppPreferences {
                 selected_mode: self.mode,
                 settings_by_mode: self.settings_by_mode.clone(),
                 prevent_system_sleep: self.sleep.enabled,
+                cpu_limit: self.cpu_limit,
             };
             match self.state_store.save_preferences(&preferences) {
                 Ok(()) => {
                     self.persisted_mode = self.mode;
                     self.sleep.persisted_enabled = self.sleep.enabled;
+                    self.persisted_cpu_limit = self.cpu_limit;
                 }
                 Err(error) => self.activity = format!("Unable to save settings: {error}"),
             }
         }
+    }
+
+    fn cpu_thread_limit(&self) -> usize {
+        self.cpu_limit
+            .thread_limit(self.cpu_limiter.available_threads())
+    }
+
+    fn cpu_limit_summary(&self) -> String {
+        let threads = self.cpu_thread_limit();
+        let available = self.cpu_limiter.available_threads();
+        let unit = if available == 1 { "thread" } else { "threads" };
+        format!(
+            "{} · {}% · {threads} of {available} CPU {unit}",
+            self.cpu_limit.label(),
+            self.cpu_limit.percent()
+        )
     }
 
     fn start_selected(&mut self, context: &egui::Context) -> bool {
@@ -3858,7 +3886,12 @@ impl ConverterApp {
         let _ = self.queue.set_status(&id, QueueStatus::Running);
         let _ = self.queue.set_error(&id, None);
         self.progress = None;
-        self.activity = format!("Running {}", task.name);
+        let cpu_thread_limit = self.cpu_thread_limit();
+        let cpu_limit_error = self.cpu_limiter.set_thread_limit(cpu_thread_limit).err();
+        self.activity = cpu_limit_error.map_or_else(
+            || format!("Running {}", task.name),
+            |error| format!("Running {}; live CPU limit unavailable: {error}", task.name),
+        );
         self.live_preview_texture = None;
         self.live_preview = None;
         self.active_source_info = None;
@@ -3869,6 +3902,7 @@ impl ConverterApp {
             request,
             context.clone(),
             self.frame_preview_enabled,
+            cpu_thread_limit,
         ));
         self.update_sleep_inhibitor();
         self.persist_queue();
@@ -4534,6 +4568,8 @@ pub struct SlintAppSnapshot {
     pub active_title: String,
     pub active_detail: String,
     pub live_status: SlintLiveStatusSnapshot,
+    pub cpu_limit_index: usize,
+    pub cpu_limit_summary: String,
     pub progress: f32,
     pub is_running: bool,
     pub is_paused: bool,
@@ -5317,6 +5353,32 @@ impl SlintController {
         }
     }
 
+    pub fn set_cpu_limit(&mut self, index: usize) {
+        let Some(cpu_limit) = CpuLimitLevel::from_index(index) else {
+            return;
+        };
+        if cpu_limit == self.app.cpu_limit {
+            return;
+        }
+        self.app.cpu_limit = cpu_limit;
+        let threads = self.app.cpu_thread_limit();
+        let active = self.app.worker.is_some();
+        if let Some(worker) = &self.app.worker {
+            worker.control.set_cpu_thread_limit(threads);
+        }
+        self.app.activity = match active
+            .then(|| self.app.cpu_limiter.set_thread_limit(threads))
+            .transpose()
+        {
+            Ok(Some(())) => format!("CPU limit set to {}", self.app.cpu_limit_summary()),
+            Ok(None) => format!("CPU limit saved: {}", self.app.cpu_limit_summary()),
+            Err(error) => {
+                format!("CPU limit saved for the next file; live adjustment unavailable: {error}")
+            }
+        };
+        self.app.sync_preferences();
+    }
+
     pub fn pause_after_current(&mut self) {
         if self.app.worker.is_none() {
             return;
@@ -5881,6 +5943,8 @@ impl SlintController {
             active_title,
             active_detail,
             live_status,
+            cpu_limit_index: self.app.cpu_limit.index(),
+            cpu_limit_summary: self.app.cpu_limit_summary(),
             progress: active_progress,
             is_running: self.app.worker.is_some() || paused_between_files,
             is_paused: paused_between_files
@@ -6169,10 +6233,12 @@ fn spawn_worker(
     request: ConversionRequest,
     context: egui::Context,
     preview_enabled: bool,
+    cpu_thread_limit: usize,
 ) -> WorkerState {
     let (sender, receiver) = mpsc::channel();
     let control = Arc::new(ConversionControl::new());
     control.set_preview_enabled(preview_enabled);
+    control.set_cpu_thread_limit(cpu_thread_limit);
     let worker_control = Arc::clone(&control);
     let worker_task_id = task_id.clone();
     let target = request.input.clone();

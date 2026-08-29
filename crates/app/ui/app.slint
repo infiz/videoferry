@@ -946,6 +946,7 @@ export component AppWindow inherits Window {
     in property <string> live-app-cpu: "-";
     in property <int> cpu-limit-index: 4;
     in property <string> cpu-limit-summary: "Maximum · 100%";
+    in property <string> cpu-usage: "-";
     in property <float> progress: 0;
     in property <bool> is-running: false;
     in property <bool> is-paused: false;
@@ -1605,7 +1606,7 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             Text {
-                                text: root.cpu-limit-summary;
+                                text: root.cpu-limit-summary + " · CPU usage " + root.cpu-usage;
                                 color: #ff6973;
                                 font-size: 11px;
                                 font-weight: 650;

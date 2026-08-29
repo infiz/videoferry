@@ -4590,6 +4590,7 @@ pub struct SlintAppSnapshot {
     pub live_status: SlintLiveStatusSnapshot,
     pub cpu_limit_index: usize,
     pub cpu_limit_summary: String,
+    pub cpu_usage: String,
     pub progress: f32,
     pub is_running: bool,
     pub is_paused: bool,
@@ -5969,6 +5970,10 @@ impl SlintController {
             live_status,
             cpu_limit_index: self.app.cpu_limit.index(),
             cpu_limit_summary: self.app.cpu_limit_summary(),
+            cpu_usage: self
+                .app
+                .process_cpu_usage_percent
+                .map_or_else(|| "-".to_owned(), |value| format!("{value:.0}%")),
             progress: active_progress,
             is_running: self.app.worker.is_some() || paused_between_files,
             is_paused: paused_between_files

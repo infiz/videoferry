@@ -167,7 +167,7 @@ pub(super) fn write_video_transcode(
                 .transcoder
                 .decoder
                 .send_packet(&packet)
-                .map_err(ffmpeg_failure)?;
+                .map_err(|error| ffmpeg_failure_at("sending a video packet", error))?;
             setup.transcoder.drain_frames(
                 &mut output,
                 output_time_bases[output_index],
@@ -205,7 +205,7 @@ pub(super) fn write_video_transcode(
         .transcoder
         .decoder
         .send_eof()
-        .map_err(ffmpeg_failure)?;
+        .map_err(|error| ffmpeg_failure_at("finishing the video decoder", error))?;
     setup.transcoder.drain_frames(
         &mut output,
         output_time_bases[setup.transcoder.output_index],
@@ -222,7 +222,7 @@ pub(super) fn write_video_transcode(
         .transcoder
         .encoder
         .send_eof()
-        .map_err(ffmpeg_failure)?;
+        .map_err(|error| ffmpeg_failure_at("finishing the video encoder", error))?;
     setup.transcoder.drain_packets(
         &mut output,
         output_time_bases[setup.transcoder.output_index],
@@ -388,9 +388,8 @@ impl VideoTranscoder {
         stabilization: Option<&StabilizationPlan>,
         cpu_thread_limit: usize,
     ) -> Result<Self, EngineError> {
-        let settings = spec.settings;
-        let target_frame_rate = spec.target_frame_rate;
-        let progress = spec.progress;
+        let (settings, target_frame_rate, progress) =
+            (spec.settings, spec.target_frame_rate, spec.progress);
         let mut decoder_context =
             ffmpeg::codec::context::Context::from_parameters(input.parameters())
                 .map_err(ffmpeg_failure)?;
@@ -514,7 +513,9 @@ impl VideoTranscoder {
                         })?
                         .source()
                         .add(&decoded)
-                        .map_err(ffmpeg_failure)?;
+                        .map_err(|error| {
+                            ffmpeg_failure_at("sending a decoded video frame to the filter", error)
+                        })?;
                     self.drain_filtered(output, output_time_base)?;
                     self.emit_progress(timestamp, total, partial_path, emit);
                 }
@@ -554,7 +555,7 @@ impl VideoTranscoder {
             .ok_or_else(|| EngineError::Failed("video filter input disappeared".to_owned()))?
             .source()
             .flush()
-            .map_err(ffmpeg_failure)?;
+            .map_err(|error| ffmpeg_failure_at("finishing the video filter", error))?;
         self.drain_filtered(output, output_time_base)
     }
 
@@ -575,8 +576,12 @@ impl VideoTranscoder {
                 Ok(()) => {
                     converted.set_kind(ffmpeg::picture::Type::None);
                     let timestamp = converted.timestamp();
-                    self.send_converted_frames(&mut converted, timestamp)?;
-                    self.drain_packets(output, output_time_base)?;
+                    self.send_converted_frames(
+                        &mut converted,
+                        timestamp,
+                        output,
+                        output_time_base,
+                    )?;
                 }
                 Err(error) if is_again_or_eof(error) => break,
                 Err(error) => return Err(ffmpeg_failure(error)),
@@ -610,6 +615,8 @@ impl VideoTranscoder {
         &mut self,
         converted: &mut ffmpeg::frame::Video,
         source_timestamp: Option<i64>,
+        output: &mut ffmpeg::format::context::Output,
+        output_time_base: ffmpeg::Rational,
     ) -> Result<(), EngineError> {
         if self.target_frame_rate.is_none() {
             converted.set_pts(source_timestamp.map(|timestamp| {
@@ -619,9 +626,7 @@ impl VideoTranscoder {
                     ffmpeg::Rounding::NearInfinity,
                 )
             }));
-            self.encoder.send_frame(converted).map_err(ffmpeg_failure)?;
-            self.frames = self.frames.saturating_add(1);
-            return Ok(());
+            return self.send_frame_and_drain(converted, output, output_time_base);
         }
 
         let Some(source_timestamp) = source_timestamp else {
@@ -636,11 +641,35 @@ impl VideoTranscoder {
         let target_pts = target_pts.saturating_sub(first_target_pts).max(0);
         while self.next_output_pts <= target_pts {
             converted.set_pts(Some(self.next_output_pts));
-            self.encoder.send_frame(converted).map_err(ffmpeg_failure)?;
-            self.frames = self.frames.saturating_add(1);
+            self.send_frame_and_drain(converted, output, output_time_base)?;
             self.next_output_pts = self.next_output_pts.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn send_frame_and_drain(
+        &mut self,
+        frame: &ffmpeg::frame::Video,
+        output: &mut ffmpeg::format::context::Output,
+        output_time_base: ffmpeg::Rational,
+    ) -> Result<(), EngineError> {
+        if let Err(error) = self.encoder.send_frame(frame) {
+            if !is_again(error) {
+                return Err(ffmpeg_failure_at(
+                    "sending a frame to the video encoder",
+                    error,
+                ));
+            }
+            self.drain_packets(output, output_time_base)?;
+            self.encoder.send_frame(frame).map_err(|retry_error| {
+                ffmpeg_failure_at(
+                    "retrying a frame after draining the video encoder",
+                    retry_error,
+                )
+            })?;
+        }
+        self.frames = self.frames.saturating_add(1);
+        self.drain_packets(output, output_time_base)
     }
 
     fn emit_progress(
@@ -929,15 +958,22 @@ fn selected_streams(plan: &StreamPlan) -> BTreeSet<usize> {
 }
 
 fn is_again_or_eof(error: ffmpeg::Error) -> bool {
-    error == ffmpeg::Error::Eof
-        || error
-            == ffmpeg::Error::Other {
-                errno: ffmpeg::error::EAGAIN,
-            }
+    error == ffmpeg::Error::Eof || is_again(error)
+}
+
+fn is_again(error: ffmpeg::Error) -> bool {
+    error
+        == ffmpeg::Error::Other {
+            errno: ffmpeg::error::EAGAIN,
+        }
 }
 
 fn ffmpeg_failure(error: ffmpeg::Error) -> EngineError {
     EngineError::Failed(error.to_string())
+}
+
+fn ffmpeg_failure_at(operation: &str, error: ffmpeg::Error) -> EngineError {
+    EngineError::Failed(format!("{operation}: {error}"))
 }
 
 fn rate(value: f64, elapsed: Duration) -> Option<f64> {

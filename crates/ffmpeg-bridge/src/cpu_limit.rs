@@ -1,4 +1,134 @@
 use std::io;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy)]
+struct ProcessCpuSample {
+    wall_time: Instant,
+    process_time: Duration,
+}
+
+/// Samples this process's CPU use as a percentage of the whole machine.
+#[derive(Debug)]
+pub struct ProcessCpuSampler {
+    logical_processors: usize,
+    previous: Option<ProcessCpuSample>,
+}
+
+impl ProcessCpuSampler {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            logical_processors: std::thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get),
+            previous: None,
+        }
+    }
+
+    /// Returns CPU use normalized to 0–100% across all logical processors.
+    ///
+    /// The first sample establishes a baseline and returns `None`.
+    pub fn sample_percent(&mut self) -> Option<f64> {
+        let current = ProcessCpuSample {
+            wall_time: Instant::now(),
+            process_time: process_cpu_time()?,
+        };
+        let previous = self.previous.replace(current)?;
+        normalized_process_cpu_percent(
+            current.process_time.saturating_sub(previous.process_time),
+            current
+                .wall_time
+                .saturating_duration_since(previous.wall_time),
+            self.logical_processors,
+        )
+    }
+
+    pub fn reset(&mut self) {
+        self.previous = None;
+    }
+}
+
+impl Default for ProcessCpuSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn normalized_process_cpu_percent(
+    process_delta: Duration,
+    wall_delta: Duration,
+    logical_processors: usize,
+) -> Option<f64> {
+    if wall_delta.is_zero() || logical_processors == 0 {
+        return None;
+    }
+    let logical_processors = u32::try_from(logical_processors).ok()?;
+    Some(
+        (process_delta.as_secs_f64() / wall_delta.as_secs_f64() / f64::from(logical_processors)
+            * 100.0)
+            .clamp(0.0, 100.0),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn process_cpu_time() -> Option<Duration> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: GetCurrentProcess returns a valid pseudo-handle, and all FILETIME
+    // pointers refer to initialized writable values for the duration of the call.
+    let succeeded = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    if succeeded == 0 {
+        return None;
+    }
+    let ticks = file_time_ticks(kernel).checked_add(file_time_ticks(user))?;
+    Some(Duration::from_nanos(ticks.checked_mul(100)?))
+}
+
+#[cfg(target_os = "windows")]
+fn file_time_ticks(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
+}
+
+#[cfg(unix)]
+fn process_cpu_time() -> Option<Duration> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `usage` points to sufficient writable storage for getrusage, and
+    // a successful call initializes the complete rusage value.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: getrusage returned success and initialized `usage` above.
+    let usage = unsafe { usage.assume_init() };
+    let user = timeval_microseconds(usage.ru_utime)?;
+    let system = timeval_microseconds(usage.ru_stime)?;
+    Some(Duration::from_micros(user.checked_add(system)?))
+}
+
+#[cfg(unix)]
+fn timeval_microseconds(value: libc::timeval) -> Option<u64> {
+    let seconds = u64::try_from(value.tv_sec).ok()?;
+    let microseconds = u64::try_from(value.tv_usec).ok()?;
+    seconds
+        .checked_mul(1_000_000)
+        .and_then(|total| total.checked_add(microseconds))
+}
+
+#[cfg(not(any(target_os = "windows", unix)))]
+const fn process_cpu_time() -> Option<Duration> {
+    None
+}
 
 /// Limits the logical processors available to the current `VideoFerry` process.
 ///
@@ -124,6 +254,36 @@ fn first_processors(available: usize, count: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn cpu_usage_is_normalized_across_logical_processors() {
+        let usage = super::normalized_process_cpu_percent(
+            Duration::from_secs(20),
+            Duration::from_secs(1),
+            32,
+        )
+        .unwrap();
+
+        assert!((usage - 62.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cpu_usage_is_bounded_and_rejects_an_empty_interval() {
+        assert_eq!(
+            super::normalized_process_cpu_percent(
+                Duration::from_secs(64),
+                Duration::from_secs(1),
+                32,
+            ),
+            Some(100.0)
+        );
+        assert_eq!(
+            super::normalized_process_cpu_percent(Duration::ZERO, Duration::ZERO, 32),
+            None
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn affinity_selection_uses_only_available_processors() {

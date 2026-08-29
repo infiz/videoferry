@@ -943,6 +943,7 @@ export component AppWindow inherits Window {
     in property <string> live-spent: "-";
     in property <string> live-estimated-total: "-";
     in property <string> live-remaining: "-";
+    in property <string> live-app-cpu: "-";
     in property <int> cpu-limit-index: 4;
     in property <string> cpu-limit-summary: "Maximum · 100%";
     in property <float> progress: 0;
@@ -1597,7 +1598,7 @@ export component AppWindow inherits Window {
                             height: 16px;
                             vertical-stretch: 0;
                             Text {
-                                text: "CPU use";
+                                text: "CPU limit";
                                 color: #aaaab5;
                                 font-size: 11px;
                                 font-weight: 600;
@@ -1627,7 +1628,7 @@ export component AppWindow inherits Window {
                         }
                         FiveStopSlider {
                             height: 20px;
-                            accessible-label: "CPU use: " + root.cpu-limit-summary;
+                            accessible-label: "CPU limit: " + root.cpu-limit-summary;
                             value: root.cpu-limit-index;
                             changed(value) => { root.set-cpu-limit(value); }
                         }
@@ -1746,6 +1747,7 @@ export component AppWindow inherits Window {
                         LiveMetric { label: "Spent"; value: root.live-spent; }
                         LiveMetric { label: "Est. total"; value: root.live-estimated-total; }
                         LiveMetric { label: "Remaining"; value: root.live-remaining; }
+                        LiveMetric { label: "App CPU"; value: root.live-app-cpu; }
                     }
                 }
             }

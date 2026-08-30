@@ -20,7 +20,7 @@ use videoferry_core::{
     Queue, QueueSettings, QueueStatus, QueueTask, StreamKind, build_stream_plan,
     conversion_output_path, stabilized_output_path, trim_output_path,
 };
-use videoferry_ffmpeg::ProcessCpuLimiter;
+use videoferry_ffmpeg::{ProcessCpuLimiter, ProcessCpuSampler};
 #[cfg(any(feature = "native-ffmpeg", test))]
 use videoferry_presets::dji_camera_profile;
 use videoferry_presets::{
@@ -148,6 +148,9 @@ struct ConverterApp {
     cpu_limit: CpuLimitLevel,
     persisted_cpu_limit: CpuLimitLevel,
     cpu_limiter: ProcessCpuLimiter,
+    cpu_sampler: ProcessCpuSampler,
+    process_cpu_usage_percent: Option<f64>,
+    next_cpu_usage_refresh: Instant,
     watched_folders: Vec<WatchedFolder>,
     folder_summaries: Vec<FolderQueueSummary>,
     task_run_failures: HashMap<String, HashMap<PathBuf, String>>,
@@ -580,6 +583,7 @@ impl Default for ConverterApp {
         let prevent_system_sleep = preferences.prevent_system_sleep;
         let cpu_limit = preferences.cpu_limit;
         let cpu_limiter = ProcessCpuLimiter::new();
+        let cpu_sampler = ProcessCpuSampler::new();
         let encoding_settings = preferences
             .settings_by_mode
             .values()
@@ -658,6 +662,9 @@ impl Default for ConverterApp {
             cpu_limit,
             persisted_cpu_limit: cpu_limit,
             cpu_limiter,
+            cpu_sampler,
+            process_cpu_usage_percent: None,
+            next_cpu_usage_refresh: Instant::now(),
             watched_folders,
             folder_summaries,
             task_run_failures,
@@ -721,6 +728,7 @@ impl eframe::App for ConverterApp {
         self.handle_close_request(&context);
         self.poll_engine_discovery(&context);
         self.poll_worker(&context);
+        self.refresh_process_cpu_usage();
         self.poll_review_worker(&context);
         if self.close_state == CloseState::WaitingForWorker && self.worker.is_none() {
             self.close_state = CloseState::Open;
@@ -891,6 +899,21 @@ impl ConverterApp {
             self.persist_queue();
         }
         self.refresh_folder_summaries();
+    }
+
+    fn refresh_process_cpu_usage(&mut self) {
+        let now = Instant::now();
+        if self.worker.is_none() {
+            self.cpu_sampler.reset();
+            self.process_cpu_usage_percent = None;
+            self.next_cpu_usage_refresh = now;
+            return;
+        }
+        if now < self.next_cpu_usage_refresh {
+            return;
+        }
+        self.next_cpu_usage_refresh = now + Duration::from_secs(1);
+        self.process_cpu_usage_percent = self.cpu_sampler.sample_percent();
     }
 
     fn refresh_folder_summaries(&mut self) {
@@ -4180,12 +4203,7 @@ impl ConverterApp {
                 | QueueRunState::Stopping => self.queue_run_state = QueueRunState::Idle,
                 _ => {}
             }
-            if let Some(task) = self
-                .queue
-                .task(&task_id)
-                .filter(|task| task.status == QueueStatus::Completed)
-                .cloned()
-            {
+            if let Some(task) = self.queue.task(&task_id).cloned() {
                 let rename_messages = rename_completed_task_directories(&task);
                 if !rename_messages.is_empty() {
                     self.activity = format!("{} · {}", self.activity, rename_messages.join(" · "));
@@ -4516,6 +4534,7 @@ pub struct SlintLiveStatusSnapshot {
     pub spent: String,
     pub estimated_total: String,
     pub remaining: String,
+    pub app_cpu: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5092,6 +5111,7 @@ impl SlintController {
     pub fn tick(&mut self) {
         self.app.poll_engine_discovery(&self.context);
         self.app.poll_worker(&self.context);
+        self.app.refresh_process_cpu_usage();
         if self.app.worker.is_none() && self.app.resume_task_id.take().is_some() {
             "Resuming persisted queue".clone_into(&mut self.app.activity);
             self.app.start_queue(&self.context);
@@ -6036,6 +6056,9 @@ fn slint_live_status(app: &ConverterApp) -> SlintLiveStatusSnapshot {
         spent: format_clock(spent),
         estimated_total: estimated_total.map_or_else(|| "-".to_owned(), format_clock),
         remaining: remaining.map_or_else(|| "-".to_owned(), format_clock),
+        app_cpu: app
+            .process_cpu_usage_percent
+            .map_or_else(|| "-".to_owned(), |value| format!("{value:.0}%")),
     }
 }
 
@@ -8193,9 +8216,7 @@ fn rename_completed_task_directories(task: &QueueTask) -> Vec<String> {
         if name.starts_with("0_") || name.ends_with(suffix) || !directory.is_dir() {
             continue;
         }
-        let media_count = direct_video_count(&directory);
-        let backup_count = direct_video_count(&directory.join("original"));
-        if media_count != backup_count {
+        if !directory_tree_is_conversion_complete(&directory) {
             continue;
         }
         let renamed = directory.with_file_name(format!("{name}{suffix}"));
@@ -8220,6 +8241,20 @@ fn rename_completed_task_directories(task: &QueueTask) -> Vec<String> {
         }
     }
     messages
+}
+
+fn directory_tree_is_conversion_complete(directory: &std::path::Path) -> bool {
+    if direct_video_count(directory) != direct_video_count(&directory.join("original")) {
+        return false;
+    }
+    std::fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && !is_skipped_conversion_directory(path))
+        .all(|path| directory_tree_is_conversion_complete(&path))
 }
 
 fn collect_rename_directories(root: &std::path::Path, directories: &mut Vec<PathBuf>) {
@@ -9770,6 +9805,36 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(is_skipped_conversion_directory(&renamed));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn running_aggregate_task_renames_each_completed_subfolder() {
+        let temporary = temporary_test_directory("running-aggregate-folder-rename");
+        let root = temporary.join("Shows");
+        let completed = root.join("Completed Show");
+        let pending = root.join("Pending Show");
+        std::fs::create_dir_all(completed.join("original")).unwrap();
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(completed.join("episode.mkv"), b"converted").unwrap();
+        std::fs::write(completed.join("original/episode.mp4"), b"source").unwrap();
+        std::fs::write(pending.join("episode.mp4"), b"source").unwrap();
+        let mut task = QueueTask::new(
+            "shows",
+            "TV - Shows",
+            vec![root.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        task.status = QueueStatus::Running;
+
+        let messages = rename_completed_task_directories(&task);
+
+        assert!(root.join("Completed Show (x265)").is_dir());
+        assert!(!completed.exists());
+        assert!(root.is_dir());
+        assert!(pending.is_dir());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(task.status, QueueStatus::Running);
+        std::fs::remove_dir_all(temporary).unwrap();
     }
 
     #[test]

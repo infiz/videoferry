@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -25,6 +25,7 @@ videoferry-ffmpeg = { path = "crates/ffmpeg-bridge" }
 videoferry-presets = { path = "crates/presets" }
 jiff = "=0.2.35"
 keepawake = "=0.6.1"
+libc = "=0.2.189"
 notify-rust = { version = "=4.18.0", default-features = false, features = ["z"] }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 serde = { version = "=1.0.229", features = ["derive"] }

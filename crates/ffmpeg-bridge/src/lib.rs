@@ -8,7 +8,7 @@ use videoferry_core::{
 };
 
 mod cpu_limit;
-pub use cpu_limit::ProcessCpuLimiter;
+pub use cpu_limit::{ProcessCpuLimiter, ProcessCpuSampler};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhotoThumbnail {

@@ -104,7 +104,9 @@ impl AudioTranscoder {
         output: &mut ffmpeg::format::context::Output,
         output_time_base: ffmpeg::Rational,
     ) -> Result<(), EngineError> {
-        self.decoder.send_packet(packet).engine()?;
+        self.decoder
+            .send_packet(packet)
+            .map_err(|error| EngineError::Failed(format!("sending an audio packet: {error}")))?;
         self.drain_decoder(output, output_time_base)
     }
 
@@ -113,7 +115,9 @@ impl AudioTranscoder {
         output: &mut ffmpeg::format::context::Output,
         output_time_base: ffmpeg::Rational,
     ) -> Result<(), EngineError> {
-        self.decoder.send_eof().engine()?;
+        self.decoder.send_eof().map_err(|error| {
+            EngineError::Failed(format!("finishing the audio decoder: {error}"))
+        })?;
         self.drain_decoder(output, output_time_base)?;
         self.filter
             .get("in")
@@ -122,7 +126,9 @@ impl AudioTranscoder {
             .flush()
             .engine()?;
         self.drain_filter(output, output_time_base)?;
-        self.encoder.send_eof().engine()?;
+        self.encoder.send_eof().map_err(|error| {
+            EngineError::Failed(format!("finishing the audio encoder: {error}"))
+        })?;
         self.drain_encoder(output, output_time_base)
     }
 

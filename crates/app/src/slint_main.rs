@@ -722,6 +722,7 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFile
 
     ui.set_tasks(model(tasks));
     ui.set_selected_task_title(SharedString::from(&snapshot.selected_task_title));
+    ui.set_selected_task_error_detail(SharedString::from(&snapshot.selected_task_error_detail));
     refresh_task_file_rows(ui, &snapshot.selected_task_files, task_file_sort);
     ui.set_history(model(history));
     refresh_settings(ui, snapshot);
@@ -805,6 +806,7 @@ mod tests {
             new_fps: "-".to_owned(),
             codec: "x265".to_owned(),
             duration: duration.to_owned(),
+            error_detail: String::new(),
         }
     }
 

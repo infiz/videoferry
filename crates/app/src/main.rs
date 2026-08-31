@@ -158,6 +158,7 @@ struct ConverterApp {
     next_folder_refresh: Instant,
     task_name_edit: String,
     task_name_edit_id: Option<String>,
+    task_file_error_dialog: Option<(String, String)>,
     activity_log: Vec<String>,
     logged_activity: String,
     frame_preview_enabled: bool,
@@ -558,18 +559,23 @@ impl Default for ConverterApp {
                 AppPreferences::default()
             }
         };
-        let (queue, resume_task_id, next_id) = match state_store.load_queue() {
+        let (queue, resume_task_id, next_id, task_run_failures) = match state_store.load_queue() {
             Ok(Some(loaded)) => {
                 let count = loaded.queue.tasks().len();
                 if count > 0 {
                     activity_messages.push(format!("Restored {count} queue item(s)"));
                 }
-                (loaded.queue, loaded.resume_task_id, loaded.next_id)
+                (
+                    loaded.queue,
+                    loaded.resume_task_id,
+                    loaded.next_id,
+                    loaded.task_run_failures,
+                )
             }
-            Ok(None) => (Queue::default(), None, 1),
+            Ok(None) => (Queue::default(), None, 1, HashMap::new()),
             Err(error) => {
                 activity_messages.push(format!("Queue recovery skipped: {error}"));
-                (Queue::default(), None, 1)
+                (Queue::default(), None, 1, HashMap::new())
             }
         };
         let completed_history = match state_store.load_history() {
@@ -602,7 +608,6 @@ impl Default for ConverterApp {
         let selected_id = queue.tasks().front().map(|task| task.id.clone());
         let selected_ids = selected_id.iter().cloned().collect();
         let watched_folders = restored_folder_watches(&queue);
-        let task_run_failures = HashMap::new();
         let folder_summaries = folder_queue_summaries(&watched_folders, &queue, &task_run_failures);
         Self {
             queue,
@@ -672,6 +677,7 @@ impl Default for ConverterApp {
             next_folder_refresh: Instant::now() + Duration::from_secs(2),
             task_name_edit: String::new(),
             task_name_edit_id: None,
+            task_file_error_dialog: None,
             activity_log: Vec::new(),
             logged_activity: String::new(),
             frame_preview_enabled: false,
@@ -773,6 +779,7 @@ impl eframe::App for ConverterApp {
         let _ = self.state_store.save_queue(
             &self.queue,
             self.worker.is_some() || self.queue_run_state != QueueRunState::Idle,
+            &self.task_run_failures,
         );
     }
 }
@@ -3070,8 +3077,9 @@ impl ConverterApp {
         }
     }
 
-    fn show_selected_task_files(&self, ui: &mut egui::Ui, task: &QueueTask) {
+    fn show_selected_task_files(&mut self, ui: &mut egui::Ui, task: &QueueTask) {
         ui.strong("Files");
+        let mut error_to_show = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             egui::Grid::new("selected-task-files-grid")
                 .striped(true)
@@ -3088,30 +3096,71 @@ impl ConverterApp {
                         "New FPS",
                         "Codec",
                         "Duration",
+                        "Error",
                     ] {
                         ui.strong(heading);
                     }
                     ui.end_row();
-                    for file in selected_task_files(task, &self.completed_history) {
+                    for file in selected_task_files(
+                        task,
+                        &self.completed_history,
+                        self.task_run_failures.get(&task.id),
+                    ) {
                         for value in [
-                            file.path,
-                            file.status,
-                            file.started_time,
-                            file.completed_time,
-                            file.conversion_time,
-                            file.original_size,
-                            file.new_size,
-                            file.original_fps,
-                            file.new_fps,
-                            file.codec,
-                            file.duration,
+                            &file.path,
+                            &file.status,
+                            &file.started_time,
+                            &file.completed_time,
+                            &file.conversion_time,
+                            &file.original_size,
+                            &file.new_size,
+                            &file.original_fps,
+                            &file.new_fps,
+                            &file.codec,
+                            &file.duration,
                         ] {
                             ui.label(value);
+                        }
+                        if file.error_detail.is_empty() {
+                            ui.label("-");
+                        } else if ui.button("Show error").clicked() {
+                            error_to_show = Some((file.path, file.error_detail));
                         }
                         ui.end_row();
                     }
                 });
         });
+        if let Some(error) = error_to_show {
+            self.task_file_error_dialog = Some(error);
+        }
+        if let Some((path, error)) = self.task_file_error_dialog.clone() {
+            let mut open = true;
+            let mut close_clicked = false;
+            egui::Window::new("Conversion error")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .show(ui.ctx(), |ui| {
+                    ui.strong(path);
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            ui.label(&error);
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy error").clicked() {
+                            ui.ctx().copy_text(error.clone());
+                        }
+                        if ui.button("Close").clicked() {
+                            close_clicked = true;
+                        }
+                    });
+                });
+            if !open || close_clicked {
+                self.task_file_error_dialog = None;
+            }
+        }
     }
 
     fn show_task_targets(&mut self, ui: &mut egui::Ui, id: &str, task: &QueueTask, editable: bool) {
@@ -3908,7 +3957,8 @@ impl ConverterApp {
             .entry(id.clone())
             .or_insert(converted_before_run);
         let _ = self.queue.set_status(&id, QueueStatus::Running);
-        let _ = self.queue.set_error(&id, None);
+        let run_error = task_run_failure_summary(self.task_run_failures.get(&id));
+        let _ = self.queue.set_error(&id, run_error);
         self.progress = None;
         let cpu_thread_limit = self.cpu_thread_limit();
         let cpu_limit_error = self.cpu_limiter.set_thread_limit(cpu_thread_limit).err();
@@ -4056,6 +4106,9 @@ impl ConverterApp {
                             });
                             if has_remaining {
                                 let _ = self.queue.set_status(&task_id, QueueStatus::Pending);
+                                let run_error =
+                                    task_run_failure_summary(self.task_run_failures.get(&task_id));
+                                let _ = self.queue.set_error(&task_id, run_error);
                                 continue_task = true;
                             } else {
                                 let _ = self.queue.set_status(&task_id, QueueStatus::Completed);
@@ -4391,6 +4444,7 @@ impl ConverterApp {
         if let Err(error) = self.state_store.save_queue(
             &self.queue,
             self.worker.is_some() || self.queue_run_state != QueueRunState::Idle,
+            &self.task_run_failures,
         ) {
             self.activity = format!("Unable to save queue: {error}");
         }
@@ -4506,6 +4560,7 @@ pub struct SlintTaskFileSnapshot {
     pub new_fps: String,
     pub codec: String,
     pub duration: String,
+    pub error_detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4581,6 +4636,7 @@ pub struct SlintAppSnapshot {
     pub tasks: Vec<SlintTaskSnapshot>,
     pub selected_task_title: String,
     pub selected_task_files: Vec<SlintTaskFileSnapshot>,
+    pub selected_task_error_detail: String,
     pub history: Vec<SlintHistorySnapshot>,
     pub settings: SlintSettingsSnapshot,
     pub activity: String,
@@ -4652,6 +4708,7 @@ fn unavailable_task_file(path: &std::path::Path, status: &str) -> SlintTaskFileS
         new_fps: "-".to_owned(),
         codec: "-".to_owned(),
         duration: "-".to_owned(),
+        error_detail: String::new(),
     }
 }
 
@@ -4683,6 +4740,7 @@ fn completed_task_file(row: &CompletedHistoryRow) -> SlintTaskFileSnapshot {
         new_fps: columns[10].clone(),
         codec,
         duration: row.duration().unwrap_or("-").to_owned(),
+        error_detail: String::new(),
     }
 }
 
@@ -4824,6 +4882,7 @@ fn task_detail_files(task: &QueueTask) -> Vec<(PathBuf, bool)> {
 fn selected_task_files(
     task: &QueueTask,
     history: &[CompletedHistoryRow],
+    failures: Option<&HashMap<PathBuf, String>>,
 ) -> Vec<SlintTaskFileSnapshot> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -4882,6 +4941,31 @@ fn selected_task_files(
                     "Queued"
                 };
                 files.push(unavailable_task_file(path, status));
+            }
+        }
+    }
+
+    if let Some(failures) = failures {
+        let failures = failures
+            .iter()
+            .map(|(path, error)| (summary_path_key(path), (path, error)))
+            .collect::<HashMap<_, _>>();
+        for file in &mut files {
+            if let Some((_, error)) =
+                failures.get(&summary_path_key(std::path::Path::new(&file.path)))
+            {
+                "Failed".clone_into(&mut file.status);
+                file.error_detail.clone_from(error);
+            }
+        }
+        for (key, (path, error)) in failures {
+            if !files
+                .iter()
+                .any(|file| summary_path_key(std::path::Path::new(&file.path)) == key)
+            {
+                let mut file = unavailable_task_file(path, "Failed");
+                file.error_detail.clone_from(error);
+                files.push(file);
             }
         }
     }
@@ -5721,6 +5805,7 @@ impl SlintController {
         let _ = self.app.state_store.save_queue(
             &self.app.queue,
             self.app.worker.is_some() || self.app.queue_run_state != QueueRunState::Idle,
+            &self.app.task_run_failures,
         );
     }
 
@@ -5788,7 +5873,7 @@ impl SlintController {
                     .converted
                     .saturating_sub(completed_before_count)
                     .min(counts.files.saturating_sub(completed_before_count));
-                let unfinished_count = counts.files.saturating_sub(counts.converted);
+                let unfinished_count = counts.remaining;
                 let completed_count = counts.converted.min(counts.files);
                 let progress_percent = ((task_progress.completed_before
                     + task_progress.completed_this_run)
@@ -5796,8 +5881,13 @@ impl SlintController {
                     .round();
                 let can_retry = matches!(task.status, QueueStatus::Failed | QueueStatus::Cancelled)
                     || (task.status == QueueStatus::Completed && task_has_remaining_work(task));
+                let failure_suffix = if counts.failed == 0 {
+                    String::new()
+                } else {
+                    format!(", {} failed", counts.failed)
+                };
                 let progress_summary = format!(
-                    "{completed_before_count} completed previously, {completed_this_run_count} completed this run, {unfinished_count} unfinished"
+                    "{completed_before_count} completed previously, {completed_this_run_count} completed this run, {unfinished_count} unfinished{failure_suffix}"
                 );
                 SlintTaskSnapshot {
                     title: task.name.clone(),
@@ -5811,14 +5901,25 @@ impl SlintController {
                     completed_this_run: task_progress.completed_this_run,
                     current_item_progress: task_progress.current_item,
                     has_progress: counts.files > 0,
-                    progress_label: format!(
-                        "{completed_count} / {} completed  ·  {progress_percent:.0}% overall",
-                        counts.files
-                    ),
+                    progress_label: if counts.failed == 0 {
+                        format!(
+                            "{completed_count} / {} completed  ·  {progress_percent:.0}% overall",
+                            counts.files
+                        )
+                    } else {
+                        format!(
+                            "{completed_count} / {} completed  ·  {} failed  ·  {progress_percent:.0}% overall",
+                            counts.files, counts.failed
+                        )
+                    },
                     progress_summary,
                     completed_before_label: format!("Previous {completed_before_count}"),
                     completed_this_run_label: format!("This run {completed_this_run_count}"),
-                    remaining_label: format!("Remaining {unfinished_count}"),
+                    remaining_label: if counts.failed == 0 {
+                        format!("Remaining {unfinished_count}")
+                    } else {
+                        format!("Remaining {unfinished_count} · Failed {}", counts.failed)
+                    },
                     selected: self.app.selected_id.as_deref() == Some(task.id.as_str()),
                     active: active_id == Some(task.id.as_str()),
                     can_run: task.status == QueueStatus::Pending || can_retry,
@@ -5892,10 +5993,20 @@ impl SlintController {
                 |task| {
                     (
                         task.name.clone(),
-                        selected_task_files(task, &self.app.completed_history),
+                        selected_task_files(
+                            task,
+                            &self.app.completed_history,
+                            self.app.task_run_failures.get(&task.id),
+                        ),
                     )
                 },
             );
+        let selected_task_error_detail = selected_task_files
+            .iter()
+            .filter(|file| !file.error_detail.is_empty())
+            .map(|file| format!("{}\n{}", file.path, file.error_detail))
+            .collect::<Vec<_>>()
+            .join("\n\n");
         let active_title = if paused_between_files {
             "Queue paused".to_owned()
         } else {
@@ -5961,6 +6072,7 @@ impl SlintController {
             tasks,
             selected_task_title,
             selected_task_files,
+            selected_task_error_detail,
             history,
             settings,
             activity: self.app.activity.clone(),
@@ -6258,6 +6370,16 @@ fn worker_error_is_locked_input(error: &EngineError) -> bool {
     message.contains("winerror 32")
         || message.contains("being used by another process")
         || message.contains("sharing violation")
+}
+
+fn task_run_failure_summary(failures: Option<&HashMap<PathBuf, String>>) -> Option<String> {
+    let failed_count = failures.map_or(0, HashMap::len);
+    (failed_count > 0).then(|| {
+        format!(
+            "{failed_count} file{} failed in this run; conversion is continuing",
+            if failed_count == 1 { "" } else { "s" }
+        )
+    })
 }
 
 fn spawn_worker(
@@ -8533,9 +8655,10 @@ mod tests {
         should_inhibit_sleep, should_skip_queue_source, slideshow_natural_key,
         slideshow_review_is_editable, slint_settings_snapshot, staging_path, target_fps_status,
         target_fps_status_with_source, task_draft_output_summary, task_progress_segments,
-        temporary_file_process_id, update_extended_selection, validate_task_targets,
-        wait_for_retry, worker_error_is_locked_input, worker_error_is_queue_fatal,
-        worker_error_should_retry, workflow_shows_encoder, workflow_shows_fps,
+        task_run_failure_summary, temporary_file_process_id, update_extended_selection,
+        validate_task_targets, wait_for_retry, worker_error_is_locked_input,
+        worker_error_is_queue_fatal, worker_error_should_retry, workflow_shows_encoder,
+        workflow_shows_fps,
     };
     #[cfg(feature = "native-ffmpeg")]
     use super::{packaged_runtime_report, resolve_lut_path};
@@ -9237,7 +9360,7 @@ mod tests {
             ["Stream copy", "-", "-"]
         );
 
-        let completed_files = selected_task_files(&task, &[configuration]);
+        let completed_files = selected_task_files(&task, &[configuration], None);
         assert_eq!(completed_files.len(), 1);
         assert_eq!(completed_files[0].path, "DJI_0001.mp4");
         assert_eq!(completed_files[0].status, "Completed");
@@ -9251,7 +9374,7 @@ mod tests {
             vec!["waiting.mkv".into()],
             default_settings(ContentMode::Tv, Encoder::X265),
         );
-        let queued_files = selected_task_files(&queued, &[]);
+        let queued_files = selected_task_files(&queued, &[], None);
         assert_eq!(queued_files.len(), 1);
         assert_eq!(queued_files[0].status, "Queued");
         assert_eq!(queued_files[0].started_time, "-");
@@ -9288,7 +9411,7 @@ mod tests {
             },
         );
 
-        let files = selected_task_files(&task, &[history]);
+        let files = selected_task_files(&task, &[history], None);
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, output.display().to_string());
@@ -9341,7 +9464,7 @@ mod tests {
         queue.add(task.clone()).unwrap();
         let summary = folder_queue_summary(&watch, &queue);
 
-        let files = selected_task_files(&task, &[legacy_row]);
+        let files = selected_task_files(&task, &[legacy_row], None);
 
         assert_eq!(files.len(), summary.files);
         assert_eq!(files.len(), 3);
@@ -9387,7 +9510,7 @@ mod tests {
             default_settings(ContentMode::Tv, Encoder::X265),
         );
 
-        let files = selected_task_files(&task, &[]);
+        let files = selected_task_files(&task, &[], None);
         let paths = files
             .iter()
             .map(|file| PathBuf::from(&file.path))
@@ -9400,6 +9523,31 @@ mod tests {
                 season_two_episode_ten,
                 season_ten_episode_one,
             ]
+        );
+    }
+
+    #[test]
+    fn failed_task_detail_file_exposes_its_conversion_error() {
+        let failed_path = PathBuf::from("season").join("episode-02.mkv");
+        let task = QueueTask::new(
+            "failed-details",
+            "Failed details",
+            vec![failed_path.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        let failures = HashMap::from([(
+            failed_path.clone(),
+            "muxer rejected the copied audio channel layout".to_owned(),
+        )]);
+
+        let files = selected_task_files(&task, &[], Some(&failures));
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, failed_path.display().to_string());
+        assert_eq!(files[0].status, "Failed");
+        assert_eq!(
+            files[0].error_detail,
+            "muxer rejected the copied audio channel layout"
         );
     }
 
@@ -9642,6 +9790,23 @@ mod tests {
         assert!((completed.completed_before - 0.2).abs() < f32::EPSILON);
         assert!((completed.completed_this_run - 0.8).abs() < f32::EPSILON);
         assert!(completed.current_item.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_failure_summary_survives_while_the_next_file_runs() {
+        let mut failures = HashMap::new();
+        failures.insert(PathBuf::from("episode-01.mp4"), "decode failed".to_owned());
+        assert_eq!(
+            task_run_failure_summary(Some(&failures)).as_deref(),
+            Some("1 file failed in this run; conversion is continuing")
+        );
+
+        failures.insert(PathBuf::from("episode-02.mp4"), "input locked".to_owned());
+        assert_eq!(
+            task_run_failure_summary(Some(&failures)).as_deref(),
+            Some("2 files failed in this run; conversion is continuing")
+        );
+        assert_eq!(task_run_failure_summary(None), None);
     }
 
     #[test]

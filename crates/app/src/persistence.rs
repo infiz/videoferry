@@ -183,6 +183,7 @@ pub(crate) struct LoadedQueue {
     pub queue: Queue,
     pub resume_task_id: Option<String>,
     pub next_id: u64,
+    pub task_run_failures: HashMap<String, HashMap<PathBuf, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +264,7 @@ impl StateStore {
             )));
         }
         let mut queue = Queue::default();
+        let mut task_run_failures = HashMap::new();
         let mut next_id = 1_u64;
         for (index, stored) in state.tasks.into_iter().enumerate() {
             let Some(settings) = stored.settings.and_then(StoredSettings::into_settings) else {
@@ -304,6 +306,14 @@ impl StateStore {
                 _ => QueueStatus::Pending,
             };
             task.error = stored.error;
+            let failures = stored
+                .failures
+                .into_iter()
+                .map(|failure| (failure.path, failure.error))
+                .collect::<HashMap<_, _>>();
+            if !failures.is_empty() {
+                task_run_failures.insert(task.id.clone(), failures);
+            }
             let _ = queue.add(task);
         }
         let resume_task_id = state
@@ -314,24 +324,43 @@ impl StateStore {
             queue,
             resume_task_id,
             next_id,
+            task_run_failures,
         }))
     }
 
-    pub fn save_queue(&self, queue: &Queue, was_running: bool) -> Result<(), PersistenceError> {
+    pub fn save_queue(
+        &self,
+        queue: &Queue,
+        was_running: bool,
+        task_run_failures: &HashMap<String, HashMap<PathBuf, String>>,
+    ) -> Result<(), PersistenceError> {
         let tasks = queue
             .tasks()
             .iter()
-            .map(|task| StoredQueueTask {
-                name: Some(task.name.clone()),
-                target_paths: task.targets.clone(),
-                source_root: task.source_root.clone(),
-                settings: Some(StoredSettings::from(&task.settings)),
-                queued_time: task.queued_time.clone(),
-                task_data_id: Some(task.id.clone()),
-                status: Some(status_name(task.status).to_owned()),
-                complete_time: task.complete_time.clone(),
-                error: task.error.clone(),
-                skipped_paths: task.skipped_paths.clone(),
+            .map(|task| {
+                let mut failures = task_run_failures
+                    .get(&task.id)
+                    .into_iter()
+                    .flat_map(|failures| failures.iter())
+                    .map(|(path, error)| StoredTaskFailure {
+                        path: path.clone(),
+                        error: error.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                failures.sort_by(|left, right| left.path.cmp(&right.path));
+                StoredQueueTask {
+                    name: Some(task.name.clone()),
+                    target_paths: task.targets.clone(),
+                    source_root: task.source_root.clone(),
+                    settings: Some(StoredSettings::from(&task.settings)),
+                    queued_time: task.queued_time.clone(),
+                    task_data_id: Some(task.id.clone()),
+                    status: Some(status_name(task.status).to_owned()),
+                    complete_time: task.complete_time.clone(),
+                    error: task.error.clone(),
+                    skipped_paths: task.skipped_paths.clone(),
+                    failures,
+                }
             })
             .collect();
         self.atomic_write_json(
@@ -636,6 +665,14 @@ struct StoredQueueTask {
     error: Option<String>,
     #[serde(default)]
     skipped_paths: Vec<PathBuf>,
+    #[serde(default)]
+    failures: Vec<StoredTaskFailure>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredTaskFailure {
+    path: PathBuf,
+    error: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -870,6 +907,8 @@ const fn default_true() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -1059,8 +1098,17 @@ mod tests {
         completed.complete_time = "2026-08-25 12:02:00".to_owned();
         completed.skipped_paths = vec!["already-x265.mp4".into()];
         queue.add(completed).unwrap();
+        let task_run_failures = HashMap::from([(
+            "task-9".to_owned(),
+            HashMap::from([(
+                PathBuf::from("episode-broken.mkv"),
+                "decoder rejected the input".to_owned(),
+            )]),
+        )]);
 
-        store.save_queue(&queue, true).expect("save queue");
+        store
+            .save_queue(&queue, true, &task_run_failures)
+            .expect("save queue");
         let restored = store
             .load_queue()
             .expect("load queue")
@@ -1085,6 +1133,7 @@ mod tests {
             restored.queue.tasks()[1].skipped_paths,
             [std::path::PathBuf::from("already-x265.mp4")]
         );
+        assert_eq!(restored.task_run_failures, task_run_failures);
     }
 
     #[test]
@@ -1100,7 +1149,9 @@ mod tests {
                 QueueSettings::default(),
             ))
             .unwrap();
-        store.save_queue(&queue, false).expect("save queue");
+        store
+            .save_queue(&queue, false, &HashMap::new())
+            .expect("save queue");
         let primary = directory.0.join(QUEUE_STATE_FILE);
         std::fs::copy(&primary, backup_path(&primary)).expect("backup fixture");
         std::fs::write(&primary, b"{truncated").expect("corrupt primary");
@@ -1118,10 +1169,10 @@ mod tests {
         let directory = TestDirectory::new("atomic");
         let store = StateStore::at(directory.0.clone());
         store
-            .save_queue(&Queue::default(), false)
+            .save_queue(&Queue::default(), false, &HashMap::new())
             .expect("first save");
         store
-            .save_queue(&Queue::default(), false)
+            .save_queue(&Queue::default(), false, &HashMap::new())
             .expect("replacement save");
         let primary = directory.0.join(QUEUE_STATE_FILE);
         assert!(primary.is_file());
@@ -1241,7 +1292,7 @@ mod tests {
             ))
             .unwrap();
 
-        store.save_queue(&queue, false).unwrap();
+        store.save_queue(&queue, false, &HashMap::new()).unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.0.join(QUEUE_STATE_FILE)).unwrap())
                 .unwrap();

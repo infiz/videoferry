@@ -30,6 +30,25 @@ pub(super) fn write_interleaved(
         .map_err(|error| EngineError::Failed(error.to_string()))
 }
 
+/// Supplies the conventional layout for copied audio that reports only a
+/// channel count. Some camera MP4 files legitimately store stereo PCM this
+/// way, but `FFmpeg`'s MP4 muxer requires a named layout when creating a new
+/// file. This changes stream metadata only; the audio packets remain copied.
+pub(super) fn normalize_copied_audio_channel_layout(stream: &mut ffmpeg::StreamMut<'_>) {
+    unsafe {
+        let parameters = &mut *stream.parameters().as_mut_ptr();
+        if parameters.codec_type == ffmpeg::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO
+            && parameters.ch_layout.order == ffmpeg::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+            && parameters.ch_layout.nb_channels > 0
+        {
+            ffmpeg::ffi::av_channel_layout_default(
+                &raw mut parameters.ch_layout,
+                parameters.ch_layout.nb_channels,
+            );
+        }
+    }
+}
+
 #[cfg(feature = "test-fault-injection")]
 fn maybe_fail_for_disk_full() -> Result<(), EngineError> {
     let fault = WRITE_FAULT.get_or_init(|| match std::env::var(DISK_FULL_AFTER_WRITES_ENV) {

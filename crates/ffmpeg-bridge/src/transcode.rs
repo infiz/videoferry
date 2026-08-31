@@ -5,14 +5,12 @@ use std::time::{Duration, Instant};
 use ffmpeg::Rescale;
 use ffmpeg_next as ffmpeg;
 use videoferry_core::{
-    AudioStreamAction, ControlDecision, ConversionControl, ConversionEvent, ConversionPreview,
-    ConversionProgress, EngineError, MetadataPolicy, QueueSettings, StreamPlan,
-    SubtitleStreamAction,
+    ControlDecision, ConversionControl, ConversionEvent, ConversionPreview, ConversionProgress,
+    EngineError, MetadataPolicy, QueueSettings, StreamPlan, SubtitleStreamAction,
 };
 
-use crate::audio::AudioTranscoder;
 use crate::chapters::copy_chapters;
-use crate::mux::write_interleaved;
+use crate::mux::{normalize_copied_audio_channel_layout, write_interleaved};
 use crate::progress::{ProgressMetadata, ProgressPhase, phase_progress};
 use crate::remux::PartialOutput;
 use crate::stabilize::{self, StabilizationPlan};
@@ -108,8 +106,6 @@ struct VideoTranscoder {
 
 struct OutputSetup {
     transcoder: VideoTranscoder,
-    audio_transcoders: Vec<AudioTranscoder>,
-    audio_mapping: Vec<Option<usize>>,
     subtitle_transcoders: Vec<SubtitleTranscoder>,
     subtitle_mapping: Vec<Option<usize>>,
     mapping: Vec<Option<usize>>,
@@ -176,13 +172,6 @@ pub(super) fn write_video_transcode(
                 control,
                 emit,
             )?;
-        } else if let Some(audio_index) = setup.audio_mapping[input_index] {
-            let audio = &mut setup.audio_transcoders[audio_index];
-            audio.process_packet(
-                &packet,
-                &mut output,
-                output_time_bases[audio.output_index()],
-            )?;
         } else if let Some(subtitle_index) = setup.subtitle_mapping[input_index] {
             let subtitle = &mut setup.subtitle_transcoders[subtitle_index];
             subtitle.process_packet(
@@ -227,9 +216,6 @@ pub(super) fn write_video_transcode(
         &mut output,
         output_time_bases[setup.transcoder.output_index],
     )?;
-    for audio in &mut setup.audio_transcoders {
-        audio.finish(&mut output, output_time_bases[audio.output_index()])?;
-    }
     output.write_trailer().map_err(ffmpeg_failure)?;
     drop(output);
     Ok(partial)
@@ -287,11 +273,9 @@ fn create_output_streams(
     let stream_count = usize::try_from(input.nb_streams())
         .map_err(|_| EngineError::InvalidMedia("too many input streams".to_owned()))?;
     let mut mapping = vec![None; stream_count];
-    let mut audio_mapping = vec![None; stream_count];
     let mut subtitle_mapping = vec![None; stream_count];
     let mut input_time_bases = vec![ffmpeg::Rational(0, 1); stream_count];
     let mut transcoder = None;
-    let mut audio_transcoders = Vec::new();
     let mut subtitle_transcoders = Vec::new();
 
     for input_stream in input.streams() {
@@ -310,20 +294,6 @@ fn create_output_streams(
                 stabilization,
                 control.cpu_thread_limit(),
             )?);
-        } else if let Some(AudioStreamAction::TranscodeAc3 { bit_rate }) = plan
-            .audio
-            .iter()
-            .find(|audio| audio.input_index == input_index)
-            .map(|audio| &audio.action)
-        {
-            let audio_index = audio_transcoders.len();
-            audio_transcoders.push(AudioTranscoder::new(
-                &input_stream,
-                output,
-                *bit_rate,
-                spec.settings.metadata == MetadataPolicy::Preserve,
-            )?);
-            audio_mapping[input_index] = Some(audio_index);
         } else if let Some(action) = plan
             .subtitles
             .iter()
@@ -350,8 +320,6 @@ fn create_output_streams(
     Ok(OutputSetup {
         transcoder: transcoder
             .ok_or_else(|| EngineError::InvalidMedia("no video stream found".to_owned()))?,
-        audio_transcoders,
-        audio_mapping,
         subtitle_transcoders,
         subtitle_mapping,
         mapping,
@@ -368,6 +336,7 @@ fn add_copy_stream(
         .add_stream(ffmpeg::encoder::find(ffmpeg::codec::Id::None))
         .map_err(ffmpeg_failure)?;
     stream.set_parameters(input.parameters());
+    normalize_copied_audio_channel_layout(&mut stream);
     stream.set_time_base(input.time_base());
     if preserve_metadata {
         stream.set_metadata(input.metadata().to_owned());

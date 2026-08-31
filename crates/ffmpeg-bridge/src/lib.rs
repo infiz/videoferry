@@ -18,8 +18,6 @@ pub struct PhotoThumbnail {
 }
 
 #[cfg(feature = "native-ffmpeg")]
-mod audio;
-#[cfg(feature = "native-ffmpeg")]
 mod chapters;
 #[cfg(feature = "native-ffmpeg")]
 mod mux;

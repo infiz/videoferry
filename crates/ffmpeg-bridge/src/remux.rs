@@ -6,13 +6,12 @@ use std::time::{Duration, Instant};
 use ffmpeg::Rescale;
 use ffmpeg_next as ffmpeg;
 use videoferry_core::{
-    AudioStreamAction, ControlDecision, ConversionControl, ConversionEvent, ConversionProgress,
-    EngineError, MetadataPolicy, StreamPlan, SubtitleStreamAction,
+    ControlDecision, ConversionControl, ConversionEvent, ConversionProgress, EngineError,
+    MetadataPolicy, StreamPlan, SubtitleStreamAction,
 };
 
-use crate::audio::AudioTranscoder;
 use crate::chapters::copy_chapters;
-use crate::mux::write_interleaved;
+use crate::mux::{normalize_copied_audio_channel_layout, write_interleaved};
 use crate::progress::ProgressMetadata;
 use crate::subtitle::SubtitleTranscoder;
 
@@ -22,8 +21,6 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 struct PacketCopy<'a> {
     plan: &'a StreamPlan,
     mapping: &'a [Option<usize>],
-    audio_mapping: &'a [Option<usize>],
-    audio_transcoders: &'a mut [AudioTranscoder],
     subtitle_mapping: &'a [Option<usize>],
     subtitle_transcoders: &'a mut [SubtitleTranscoder],
     input_time_bases: &'a [ffmpeg::Rational],
@@ -40,8 +37,6 @@ struct PacketCopy<'a> {
 
 struct StreamMapping {
     output_indices: Vec<Option<usize>>,
-    audio_mapping: Vec<Option<usize>>,
-    audio_transcoders: Vec<AudioTranscoder>,
     subtitle_mapping: Vec<Option<usize>>,
     subtitle_transcoders: Vec<SubtitleTranscoder>,
     input_time_bases: Vec<ffmpeg::Rational>,
@@ -151,8 +146,6 @@ pub(super) fn write_trimmed_copy(
     let video_packets = PacketCopy {
         plan,
         mapping: &mapping.output_indices,
-        audio_mapping: &mapping.audio_mapping,
-        audio_transcoders: &mut mapping.audio_transcoders,
         subtitle_mapping: &mapping.subtitle_mapping,
         subtitle_transcoders: &mut mapping.subtitle_transcoders,
         input_time_bases: &mapping.input_time_bases,
@@ -167,14 +160,6 @@ pub(super) fn write_trimmed_copy(
         emit,
     }
     .run(&mut input, &mut output)?;
-
-    for audio in &mut mapping.audio_transcoders {
-        let output_time_base = output
-            .stream(audio.output_index())
-            .ok_or_else(|| EngineError::Failed("output audio stream disappeared".to_owned()))?
-            .time_base();
-        audio.finish(&mut output, output_time_base)?;
-    }
 
     output.write_trailer().map_err(ffmpeg_failure)?;
     drop(output);
@@ -240,17 +225,6 @@ impl PacketCopy<'_> {
                 .rescale(ffmpeg::Rational(1, 1_000_000), input_time_base);
             packet.set_pts(packet.pts().map(|timestamp| timestamp - timestamp_offset));
             packet.set_dts(packet.dts().map(|timestamp| timestamp - timestamp_offset));
-            if let Some(audio_index) = self.audio_mapping[input_index] {
-                let audio = &mut self.audio_transcoders[audio_index];
-                let output_time_base = output
-                    .stream(audio.output_index())
-                    .ok_or_else(|| {
-                        EngineError::Failed("output audio stream disappeared".to_owned())
-                    })?
-                    .time_base();
-                audio.process_packet(&packet, output, output_time_base)?;
-                continue;
-            }
             if let Some(subtitle_index) = self.subtitle_mapping[input_index] {
                 let subtitle = &mut self.subtitle_transcoders[subtitle_index];
                 let output_time_base = output
@@ -316,8 +290,6 @@ fn add_output_streams(
     let stream_count = usize::try_from(input.nb_streams())
         .map_err(|_| EngineError::InvalidMedia("too many input streams".to_owned()))?;
     let mut mapping = vec![None; stream_count];
-    let mut audio_mapping = vec![None; stream_count];
-    let mut audio_transcoders = Vec::new();
     let mut subtitle_mapping = vec![None; stream_count];
     let mut subtitle_transcoders = Vec::new();
     let mut input_time_bases = vec![ffmpeg::Rational(0, 1); stream_count];
@@ -331,23 +303,7 @@ fn add_output_streams(
         input_time_bases[input_index] = input_stream.time_base();
         decode_delays[input_index] =
             unsafe { i64::from((*input_stream.parameters().as_ptr()).video_delay.max(0)) };
-        if let Some(AudioStreamAction::TranscodeAc3 { bit_rate }) = plan
-            .audio
-            .iter()
-            .find(|audio| audio.input_index == input_index)
-            .map(|audio| &audio.action)
-        {
-            let audio_index = audio_transcoders.len();
-            let audio = AudioTranscoder::new(
-                &input_stream,
-                output,
-                *bit_rate,
-                metadata_policy == MetadataPolicy::Preserve,
-            )?;
-            mapping[input_index] = Some(audio.output_index());
-            audio_mapping[input_index] = Some(audio_index);
-            audio_transcoders.push(audio);
-        } else if let Some(action) = plan
+        if let Some(action) = plan
             .subtitles
             .iter()
             .find(|subtitle| subtitle.input_index == input_index)
@@ -369,6 +325,7 @@ fn add_output_streams(
                 .add_stream(ffmpeg::encoder::find(ffmpeg::codec::Id::None))
                 .map_err(ffmpeg_failure)?;
             output_stream.set_parameters(input_stream.parameters());
+            normalize_copied_audio_channel_layout(&mut output_stream);
             output_stream.set_time_base(input_stream.time_base());
             let rate = input_stream.rate();
             if positive_rational(rate) {
@@ -392,8 +349,6 @@ fn add_output_streams(
     }
     Ok(StreamMapping {
         output_indices: mapping,
-        audio_mapping,
-        audio_transcoders,
         subtitle_mapping,
         subtitle_transcoders,
         input_time_bases,

@@ -17,6 +17,6 @@ pub use model::{
 pub use output_naming::{conversion_output_path, stabilized_output_path, trim_output_path};
 pub use queue::{Queue, QueueError, QueueStatus, QueueTask};
 pub use stream_policy::{
-    AudioStreamAction, PlannedAudioStream, PlannedSubtitleStream, SkippedStream, StreamPlan,
-    StreamSkipReason, SubtitleStreamAction, build_stream_plan, build_stream_plan_with_tolerance,
+    PlannedAudioStream, PlannedSubtitleStream, SkippedStream, StreamPlan, StreamSkipReason,
+    SubtitleStreamAction, build_stream_plan, build_stream_plan_with_tolerance,
 };

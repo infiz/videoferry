@@ -872,6 +872,7 @@ export component AppWindow inherits Window {
 
     in property <[TaskItem]> tasks;
     in property <string> selected-task-title;
+    in property <string> selected-task-error-detail;
     in property <[[StandardListViewItem]]> selected-task-path-rows;
     in property <[[StandardListViewItem]]> selected-task-metric-rows;
     in-out property <[TableColumn]> task-file-path-column: [
@@ -966,6 +967,7 @@ export component AppWindow inherits Window {
     in property <string> task-draft-output-summary;
     in-out property <int> selected-index: -1;
     in-out property <bool> task-details-open: false;
+    in-out property <bool> conversion-error-open: false;
     in-out property <int> page: 0;
     in-out property <bool> settings-open: false;
     in-out property <bool> task-builder-open: false;
@@ -1362,6 +1364,14 @@ export component AppWindow inherits Window {
                             horizontal-alignment: right;
                             vertical-alignment: center;
                             horizontal-stretch: 0;
+                        }
+                        SoftButton {
+                            text: "Show error";
+                            accessible-name: "Show conversion error";
+                            width: 112px;
+                            height: 32px;
+                            enabled: root.selected-task-error-detail != "";
+                            clicked => { root.conversion-error-open = true; }
                         }
                         SoftButton {
                             text: "Close";
@@ -2478,6 +2488,78 @@ export component AppWindow inherits Window {
                                 root.page = 0;
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.conversion-error-open: Rectangle {
+        background: #000000a8;
+        accessible-role: region;
+        accessible-label: "Conversion error details";
+        TouchArea { clicked => { root.conversion-error-open = false; } }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(680px, parent.width - 48px);
+            height: min(460px, parent.height - 48px);
+            border-radius: 18px;
+            background: #1c1c22;
+            border-width: 1px;
+            border-color: #4a4a54;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #000000c0;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                Text {
+                    text: "Conversion error";
+                    color: #ffffff;
+                    font-size: 21px;
+                    font-weight: 750;
+                    vertical-stretch: 0;
+                }
+                Text {
+                    text: "VideoFerry did not record a completed conversion. The full error is shown below.";
+                    color: #aaaab4;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    vertical-stretch: 0;
+                }
+                Rectangle {
+                    border-radius: 10px;
+                    background: #121216;
+                    border-width: 1px;
+                    border-color: #34343d;
+                    ScrollView {
+                        x: 12px;
+                        y: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height - 24px;
+                        Text {
+                            width: parent.width - 12px;
+                            text: root.selected-task-error-detail;
+                            color: #e4e4e8;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 42px;
+                    vertical-stretch: 0;
+                    spacing: 10px;
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    SoftButton {
+                        text: "Copy error";
+                        accessible-name: "Copy conversion error";
+                        clicked => { root.copy-text(root.selected-task-error-detail); }
+                    }
+                    SoftButton {
+                        text: "Close";
+                        primary: true;
+                        clicked => { root.conversion-error-open = false; }
                     }
                 }
             }

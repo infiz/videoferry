@@ -7,10 +7,9 @@ use std::time::Duration;
 
 use ffmpeg_next as ffmpeg;
 use videoferry_core::{
-    AudioStreamAction, ColorCharacteristics, Container, ContentMode, ConversionControl,
-    ConversionEvent, ConversionRequest, Encoder, EncoderCapabilities, EngineError, FpsPolicy,
-    MediaEngine, MediaInfo, MediaStream, StreamKind, StreamPlan, SubtitleStreamAction,
-    build_stream_plan,
+    ColorCharacteristics, Container, ContentMode, ConversionControl, ConversionEvent,
+    ConversionRequest, Encoder, EncoderCapabilities, EngineError, FpsPolicy, MediaEngine,
+    MediaInfo, MediaStream, StreamKind, StreamPlan, SubtitleStreamAction, build_stream_plan,
 };
 
 use crate::progress::ProgressMetadata;
@@ -729,20 +728,6 @@ fn validate_transcoded_stream_codecs(
     output: &MediaInfo,
     plan: &StreamPlan,
 ) -> Result<(), EngineError> {
-    let audio = output
-        .streams
-        .iter()
-        .filter(|stream| stream.kind == StreamKind::Audio)
-        .collect::<Vec<_>>();
-    for (stream, planned) in audio.iter().zip(&plan.audio) {
-        if matches!(planned.action, AudioStreamAction::TranscodeAc3 { .. })
-            && stream.codec_name.as_deref() != Some("ac3")
-        {
-            return Err(EngineError::Failed(
-                "DTS replacement stream is not AC-3".to_owned(),
-            ));
-        }
-    }
     let subtitles = output
         .streams
         .iter()

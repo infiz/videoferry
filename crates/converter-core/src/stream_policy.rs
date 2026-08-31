@@ -5,16 +5,9 @@ use crate::{Container, MediaInfo, MediaStream, StreamKind};
 const DEFAULT_DURATION_TOLERANCE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AudioStreamAction {
-    Copy,
-    TranscodeAc3 { bit_rate: u64 },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedAudioStream {
     pub input_index: usize,
     pub output_ordinal: usize,
-    pub action: AudioStreamAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +71,7 @@ pub fn build_stream_plan_with_tolerance(
 
     for stream in &media.streams {
         match stream.kind {
-            StreamKind::Audio => plan_audio(stream, container, &mut plan),
+            StreamKind::Audio => plan_audio(stream, &mut plan),
             StreamKind::Subtitle => plan_subtitle(
                 stream,
                 media.duration,
@@ -96,8 +89,8 @@ pub fn build_stream_plan_with_tolerance(
     plan
 }
 
-fn plan_audio(stream: &MediaStream, container: Container, plan: &mut StreamPlan) {
-    let Some(codec) = valid_codec_name(stream) else {
+fn plan_audio(stream: &MediaStream, plan: &mut StreamPlan) {
+    let Some(_codec) = valid_codec_name(stream) else {
         plan.skipped.push(SkippedStream {
             input_index: stream.index,
             kind: StreamKind::Audio,
@@ -106,15 +99,9 @@ fn plan_audio(stream: &MediaStream, container: Container, plan: &mut StreamPlan)
         return;
     };
 
-    let action = if container == Container::Matroska && codec.eq_ignore_ascii_case("dts") {
-        AudioStreamAction::TranscodeAc3 { bit_rate: 640_000 }
-    } else {
-        AudioStreamAction::Copy
-    };
     plan.audio.push(PlannedAudioStream {
         input_index: stream.index,
         output_ordinal: plan.audio.len(),
-        action,
     });
 }
 
@@ -232,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn copies_valid_audio_and_transcodes_dts_for_matroska() {
+    fn copies_every_valid_audio_stream_without_transcoding() {
         let source = media(
             vec![
                 stream(0, StreamKind::Video, Some("h264")),
@@ -252,12 +239,10 @@ mod tests {
                 PlannedAudioStream {
                     input_index: 1,
                     output_ordinal: 0,
-                    action: AudioStreamAction::Copy,
                 },
                 PlannedAudioStream {
                     input_index: 3,
                     output_ordinal: 1,
-                    action: AudioStreamAction::TranscodeAc3 { bit_rate: 640_000 },
                 },
             ]
         );

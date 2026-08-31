@@ -747,6 +747,7 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFile
     ui.set_live_app_cpu(SharedString::from(&snapshot.live_status.app_cpu));
     ui.set_cpu_limit_index(i32::try_from(snapshot.cpu_limit_index).unwrap_or(4));
     ui.set_cpu_limit_summary(SharedString::from(&snapshot.cpu_limit_summary));
+    ui.set_cpu_usage(SharedString::from(&snapshot.cpu_usage));
     ui.set_progress(snapshot.progress);
     ui.set_is_running(snapshot.is_running);
     ui.set_is_paused(snapshot.is_paused);

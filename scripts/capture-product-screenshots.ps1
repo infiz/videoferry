@@ -27,7 +27,7 @@ if ([string]::IsNullOrWhiteSpace($Application)) {
     $Application = Join-Path $workspaceRoot 'dist\windows\VideoFerry\VideoFerry.exe'
 }
 $application = [IO.Path]::GetFullPath($Application)
-$ffmpeg = Join-Path $workspaceRoot '.local\ffmpeg\ffmpeg-9.0.1-full_build-shared\bin\ffmpeg.exe'
+$ffmpeg = Join-Path $workspaceRoot '.local\ffmpeg\ffmpeg-9.0.2-full_build-shared\bin\ffmpeg.exe'
 foreach ($path in @($application, $ffmpeg)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required file not found: $path" }
 }

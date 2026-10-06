@@ -3431,7 +3431,7 @@ impl ConverterApp {
         ui.label("FFmpeg and FFmpeg-derived libraries are bound in-process; ffmpeg and ffprobe executables are not used.");
         ui.add_space(8.0);
         ui.strong("Licensing");
-        ui.label("The active FFmpeg runtime reports its license in the engine line above. The Windows FFmpeg 9.0.1 distribution is GPL-3.0-or-later. The application repository license must be finalized before publishing these Rust crates.");
+        ui.label("The active FFmpeg runtime reports its license in the engine line above. The Windows FFmpeg 9.0.2 distribution is GPL-3.0-or-later. The application repository license must be finalized before publishing these Rust crates.");
         ui.add_space(8.0);
         egui::CollapsingHeader::new("Embedded engine manifest")
             .default_open(false)
@@ -4193,6 +4193,9 @@ impl ConverterApp {
                                 .entry(task_id.clone())
                                 .or_default()
                                 .insert(worker_target.clone(), message);
+                            // Persist the per-file error before any remaining task cleanup so the
+                            // exact failure survives an app or system interruption.
+                            self.persist_queue();
                             let has_remaining = aggregate
                                 && self.queue.task(&task_id).is_some_and(|task| {
                                     !remaining_task_inputs(
@@ -4969,8 +4972,26 @@ fn selected_task_files(
             }
         }
     }
+    files.retain(|file| std::path::Path::new(&file.path).exists());
     files.sort_by_key(|file| full_path_natural_key(std::path::Path::new(&file.path)));
     files
+}
+
+fn selected_task_error_detail(task_error: Option<&str>, files: &[SlintTaskFileSnapshot]) -> String {
+    let file_errors = files
+        .iter()
+        .filter(|file| !file.error_detail.is_empty())
+        .map(|file| format!("{}\n{}", file.path, file.error_detail))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    match (
+        task_error.filter(|error| !error.is_empty()),
+        file_errors.is_empty(),
+    ) {
+        (Some(error), true) => error.to_owned(),
+        (Some(error), false) => format!("{error}\n\n{file_errors}"),
+        (None, _) => file_errors,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -5983,30 +6004,28 @@ impl SlintController {
                 .task(id)
                 .is_some_and(|task| task.status == QueueStatus::Pending)
         });
-        let (selected_task_title, selected_task_files) = self
+        let selected_task = self
             .app
             .selected_id
             .as_deref()
-            .and_then(|id| self.app.queue.task(id))
-            .map_or_else(
-                || (String::new(), Vec::new()),
-                |task| {
-                    (
-                        task.name.clone(),
-                        selected_task_files(
-                            task,
-                            &self.app.completed_history,
-                            self.app.task_run_failures.get(&task.id),
-                        ),
-                    )
-                },
-            );
-        let selected_task_error_detail = selected_task_files
-            .iter()
-            .filter(|file| !file.error_detail.is_empty())
-            .map(|file| format!("{}\n{}", file.path, file.error_detail))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+            .and_then(|id| self.app.queue.task(id));
+        let (selected_task_title, selected_task_files) = selected_task.map_or_else(
+            || (String::new(), Vec::new()),
+            |task| {
+                (
+                    task.name.clone(),
+                    selected_task_files(
+                        task,
+                        &self.app.completed_history,
+                        self.app.task_run_failures.get(&task.id),
+                    ),
+                )
+            },
+        );
+        let selected_task_error_detail = selected_task_error_detail(
+            selected_task.and_then(|task| task.error.as_deref()),
+            &selected_task_files,
+        );
         let active_title = if paused_between_files {
             "Queue paused".to_owned()
         } else {
@@ -8651,8 +8670,8 @@ mod tests {
         publish_specialized_output, python_existing_library_name, queue_admission_occupied_paths,
         queued_target_set, rebuild_slideshow_task_images, remaining_task_inputs,
         rename_completed_task_directories, replacement_backup_path, restored_folder_watches,
-        review_request_is_priority, run_with_retry, select_trim_source, selected_task_files,
-        should_inhibit_sleep, should_skip_queue_source, slideshow_natural_key,
+        review_request_is_priority, run_with_retry, select_trim_source, selected_task_error_detail,
+        selected_task_files, should_inhibit_sleep, should_skip_queue_source, slideshow_natural_key,
         slideshow_review_is_editable, slint_settings_snapshot, staging_path, target_fps_status,
         target_fps_status_with_source, task_draft_output_summary, task_progress_segments,
         task_run_failure_summary, temporary_file_process_id, update_extended_selection,
@@ -8673,7 +8692,7 @@ mod tests {
     #[test]
     fn packaged_runtime_verification_reports_the_pinned_direct_engine() {
         let report = packaged_runtime_report().unwrap();
-        assert!(report.starts_with("runtime=ok\nengine=FFmpeg 9.0.1"));
+        assert!(report.starts_with("runtime=ok\nengine=FFmpeg 9.0.2"));
         assert!(
             report.contains("required_encoders=aac,ac3,libsvtav1,libx264,libx265,mov_text,srt")
         );
@@ -9360,7 +9379,7 @@ mod tests {
             ["Stream copy", "-", "-"]
         );
 
-        let completed_files = selected_task_files(&task, &[configuration], None);
+        let completed_files = [super::completed_task_file(&configuration)];
         assert_eq!(completed_files.len(), 1);
         assert_eq!(completed_files[0].path, "DJI_0001.mp4");
         assert_eq!(completed_files[0].status, "Completed");
@@ -9368,10 +9387,13 @@ mod tests {
         assert_eq!(completed_files[0].codec, "h264 → hevc");
         assert_eq!(completed_files[0].duration, "02:05");
 
+        let root = temporary_test_directory("queued-task-details");
+        let waiting = root.join("waiting.mkv");
+        std::fs::write(&waiting, b"pending").unwrap();
         let queued = QueueTask::new(
             "queued",
             "Queued",
-            vec!["waiting.mkv".into()],
+            vec![waiting],
             default_settings(ContentMode::Tv, Encoder::X265),
         );
         let queued_files = selected_task_files(&queued, &[], None);
@@ -9379,6 +9401,7 @@ mod tests {
         assert_eq!(queued_files[0].status, "Queued");
         assert_eq!(queued_files[0].started_time, "-");
         assert_eq!(queued_files[0].original_size, "-");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9411,13 +9434,43 @@ mod tests {
             },
         );
 
-        let files = selected_task_files(&task, &[history], None);
+        let files = selected_task_files(&task, std::slice::from_ref(&history), None);
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, output.display().to_string());
         assert_eq!(files[0].title, "episode.mp4");
         assert_eq!(files[0].status, "Completed");
+        std::fs::rename(&output, original_directory.join("episode.mp4")).unwrap();
+        let files = selected_task_files(&task, &[history], None);
+        assert!(
+            files
+                .iter()
+                .all(|file| file.path != output.display().to_string())
+        );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_details_hide_removed_files_and_folders() {
+        let root = temporary_test_directory("removed-task-details");
+        let path = root.join("episode.mkv");
+        std::fs::write(&path, b"pending").unwrap();
+        let mut task = QueueTask::new(
+            "removed-details",
+            "Removed details",
+            vec![path.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        assert_eq!(selected_task_files(&task, &[], None).len(), 1);
+        std::fs::remove_file(&path).unwrap();
+        task.skipped_paths.push(path.clone());
+        let failures = HashMap::from([(path, "Conversion failed".to_owned())]);
+        assert!(selected_task_files(&task, &[], Some(&failures)).is_empty());
+        task.skipped_paths.clear();
+        task.targets = vec![root.clone()];
+        assert_eq!(selected_task_files(&task, &[], None).len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(selected_task_files(&task, &[], None).is_empty());
     }
 
     #[test]
@@ -9496,9 +9549,18 @@ mod tests {
 
     #[test]
     fn task_details_default_to_natural_full_path_order() {
-        let season_ten_episode_one = PathBuf::from("season-10").join("episode-1.mp4");
-        let season_two_episode_ten = PathBuf::from("season-2").join("episode-10.mp4");
-        let season_two_episode_two = PathBuf::from("season-2").join("episode-2.mp4");
+        let root = temporary_test_directory("task-details-natural-order");
+        let season_ten_episode_one = root.join("season-10").join("episode-1.mp4");
+        let season_two_episode_ten = root.join("season-2").join("episode-10.mp4");
+        let season_two_episode_two = root.join("season-2").join("episode-2.mp4");
+        for path in [
+            &season_ten_episode_one,
+            &season_two_episode_ten,
+            &season_two_episode_two,
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"pending").unwrap();
+        }
         let task = QueueTask::new(
             "natural-order",
             "Natural order",
@@ -9524,11 +9586,14 @@ mod tests {
                 season_ten_episode_one,
             ]
         );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn failed_task_detail_file_exposes_its_conversion_error() {
-        let failed_path = PathBuf::from("season").join("episode-02.mkv");
+        let root = temporary_test_directory("failed-task-details");
+        let failed_path = root.join("episode-02.mkv");
+        std::fs::write(&failed_path, b"failed").unwrap();
         let task = QueueTask::new(
             "failed-details",
             "Failed details",
@@ -9549,6 +9614,38 @@ mod tests {
             files[0].error_detail,
             "muxer rejected the copied audio channel layout"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_details_expose_task_and_file_conversion_errors() {
+        let root = temporary_test_directory("task-and-file-errors");
+        let failed_path = root.join("episode-02.mkv");
+        std::fs::write(&failed_path, b"failed").unwrap();
+        let task = QueueTask::new(
+            "failed-details",
+            "Failed details",
+            vec![failed_path.clone()],
+            default_settings(ContentMode::Tv, Encoder::X265),
+        );
+        let failures = HashMap::from([(
+            failed_path.clone(),
+            "muxer rejected the copied audio channel layout".to_owned(),
+        )]);
+        let files = selected_task_files(&task, &[], Some(&failures));
+
+        assert_eq!(
+            selected_task_error_detail(Some("Video engine stopped unexpectedly"), &[]),
+            "Video engine stopped unexpectedly"
+        );
+        assert_eq!(
+            selected_task_error_detail(Some("1 file(s) failed"), &files),
+            format!(
+                "1 file(s) failed\n\n{}\nmuxer rejected the copied audio channel layout",
+                failed_path.display()
+            )
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

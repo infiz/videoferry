@@ -287,7 +287,9 @@ try {
     $process = Start-SmokeProcess $application $workingDirectory
     $window = Get-AppWindow $process.Id
     Assert-Condition ($null -ne $window) 'Packaged Slint app did not expose a UI Automation window'
-    Assert-Condition ($window.Current.Name -eq 'VideoFerry') 'Slint window has no stable accessible name'
+    $expectedWindowName = "VideoFerry v$appVersion"
+    $actualWindowName = $window.Current.Name
+    Assert-Condition ($actualWindowName -eq $expectedWindowName) "Slint window accessible name mismatch: expected '$expectedWindowName', found '$actualWindowName'"
     $elements = Get-AppElements $window
     $queueTab = Assert-NamedControl $elements 'Conversion queue' 'ControlType.Button'
     [void](Assert-NamedControl $elements 'Completed history, 0 items' 'ControlType.Button')
@@ -461,11 +463,30 @@ try {
         Assert-Condition ([Math]::Abs($action.Current.BoundingRectangle.Height - $preview.Current.BoundingRectangle.Height) -le 2) 'Current-conversion action buttons do not have consistent heights'
     }
     $newTaskWhileRunning = Assert-NamedControl $elements 'New task' 'ControlType.Button'
+    $newTaskChildren = Get-AppElements $newTaskWhileRunning
+    $newTaskIcon = Find-AppElementByType $newTaskChildren 'ControlType.Image'
+    $newTaskText = Find-AppElement $newTaskChildren 'New task' 'ControlType.Text'
+    Assert-Condition ($null -ne $newTaskIcon -and $null -ne $newTaskText) 'New task lacks its icon or text'
+    $iconBounds = $newTaskIcon.Current.BoundingRectangle
+    $textBounds = $newTaskText.Current.BoundingRectangle
+    $buttonBounds = $newTaskWhileRunning.Current.BoundingRectangle
+    Assert-Condition ($textBounds.Left - $iconBounds.Right -ge 7) 'New task icon overlaps its text or lacks spacing'
+    Assert-Condition ([Math]::Abs(($iconBounds.Left + $textBounds.Right) / 2 - ($buttonBounds.Left + $buttonBounds.Right) / 2) -le 1) 'New task icon and text are not centered together'
     Assert-Condition $newTaskWhileRunning.Current.IsEnabled 'New task is disabled during conversion'
     Assert-Condition ($null -ne (Find-AppElement $elements 'Current file progress' 'ControlType.ProgressBar')) 'Current conversion lacks its file-local progress indicator'
     Assert-Condition ($null -ne (Find-AppElement $elements 'Current file progress' 'ControlType.Text')) 'Current conversion lacks its visible file progress label'
     $taskProgress = Find-AppElementWithPrefix $elements 'Task progress: ' 'ControlType.ProgressBar'
+    if ($null -eq $taskProgress) {
+        for ($index = 0; $index -lt $elements.Count; $index++) {
+            $element = $elements.Item($index)
+            Write-Output ("UI diagnostic: {0} | {1} | {2}" -f $element.Current.Name,
+                $element.Current.ControlType.ProgrammaticName, $element.Current.BoundingRectangle)
+        }
+    }
     Assert-Condition ($null -ne $taskProgress) 'Queue task lacks its segmented task progress indicator'
+    $queueHeading = Assert-NamedControl $elements '2 tasks in queue' 'ControlType.Text' $false
+    Assert-Condition ($queueHeading.Current.BoundingRectangle.Top - $newTaskWhileRunning.Current.BoundingRectangle.Bottom -le 64) 'Queue heading leaves excessive space below navigation'
+    Assert-Condition ($taskProgress.Current.BoundingRectangle.Bottom -le $current.Current.BoundingRectangle.Top) 'Task progress overlaps the current-conversion panel'
     Assert-Condition ($null -ne (Find-AppElement $elements 'Overall progress' 'ControlType.Text')) 'Queue task lacks its visible overall progress label'
     Assert-Condition ($taskProgress.Current.Name.Contains('completed previously')) 'Task progress does not distinguish previously completed work'
     Assert-Condition ($taskProgress.Current.Name.Contains('completed this run')) 'Task progress does not distinguish work completed in this run'

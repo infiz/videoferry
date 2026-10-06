@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($ReferencePythonProject)) {
     $ReferencePythonProject = Join-Path $rustRoot '..\homelab\projects\media-toolkits'
 }
 $referencePythonRoot = (Resolve-Path -LiteralPath $ReferencePythonProject).Path
-$ffmpegRoot = (Resolve-Path (Join-Path $rustRoot '.local\ffmpeg\ffmpeg-9.0.1-full_build-shared')).Path
+$ffmpegRoot = (Resolve-Path (Join-Path $rustRoot '.local\ffmpeg\ffmpeg-9.0.2-full_build-shared')).Path
 $ffmpeg = Join-Path $ffmpegRoot 'bin\ffmpeg.exe'
 $ffprobe = Join-Path $ffmpegRoot 'bin\ffprobe.exe'
 $runsRoot = Join-Path $rustRoot '.local\parity-runs'

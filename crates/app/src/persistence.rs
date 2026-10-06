@@ -1109,6 +1109,18 @@ mod tests {
         store
             .save_queue(&queue, true, &task_run_failures)
             .expect("save queue");
+        let stored: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.0.join(QUEUE_STATE_FILE)).expect("read queue state"),
+        )
+        .expect("parse queue state");
+        assert_eq!(
+            stored["tasks"][1]["failures"][0]["path"],
+            "episode-broken.mkv"
+        );
+        assert_eq!(
+            stored["tasks"][1]["failures"][0]["error"],
+            "decoder rejected the input"
+        );
         let restored = store
             .load_queue()
             .expect("load queue")

@@ -92,11 +92,11 @@ verify_runtime() {
         echo "$report" >&2
         exit 1
     fi
-    grep -q '^engine=FFmpeg 9\.0\.1' <<<"$report"
-    grep -q 'libavformat 63\.1\.101' <<<"$report"
-    grep -q 'libavcodec 63\.1\.101' <<<"$report"
-    grep -q 'libavfilter 12\.1\.101' <<<"$report"
-    grep -q 'libavutil 61\.1\.101' <<<"$report"
+    grep -q '^engine=FFmpeg 9\.0\.2' <<<"$report"
+    grep -q 'libavformat 63\.1\.102' <<<"$report"
+    grep -q 'libavcodec 63\.1\.102' <<<"$report"
+    grep -q 'libavfilter 12\.1\.102' <<<"$report"
+    grep -q 'libavutil 61\.1\.102' <<<"$report"
     grep -qi 'GPL' <<<"$report"
     grep -q '^required_encoders=aac,ac3,libsvtav1,libx264,libx265,mov_text,srt$' <<<"$report"
     grep -q '^stabilization=' <<<"$report"

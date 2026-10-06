@@ -1,4 +1,4 @@
-import { ComboBox, LineEdit, ListView, ScrollView, Slider, SpinBox, StandardTableView, Switch } from "std-widgets.slint";
+import { ComboBox, LineEdit, ListView, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
 import "../assets/fonts/NotoSansCJKsc-Regular.otf";
 
 export struct TaskItem {
@@ -30,6 +30,12 @@ export struct HistoryItem {
     configuration: string,
 }
 
+export struct TaskFileRow {
+    values: [string],
+    has-error: bool,
+    error-detail: string,
+}
+
 global HoverState {
     in-out property <string> text: "";
     in-out property <bool> visible: false;
@@ -46,7 +52,7 @@ component SoftButton inherits Rectangle {
     callback clicked;
 
     height: 40px;
-    min-width: 92px;
+    min-width: max(92px, button-label.preferred-width + 36px + (root.show-icon ? 26px : 0px));
     horizontal-stretch: 0;
     border-radius: 20px;
     background: !root.enabled ? #27272d
@@ -62,12 +68,14 @@ component SoftButton inherits Rectangle {
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
     forward-focus: focus;
 
-    HorizontalLayout {
-        padding-left: 18px;
-        padding-right: 18px;
-        spacing: root.show-icon ? 8px : 0px;
-        alignment: center;
+    Rectangle {
+        width: button-label.preferred-width + (root.show-icon ? 26px : 0px);
+        height: root.height;
+        x: (root.width - self.width) / 2;
+        y: 0px;
         if root.show-icon: Rectangle {
+            x: 0px;
+            y: 0px;
             width: 18px;
             height: root.height;
             horizontal-stretch: 0;
@@ -76,14 +84,17 @@ component SoftButton inherits Rectangle {
 
             Image {
                 source: root.icon;
+                x: 0px;
                 width: 18px;
                 height: 18px;
-                y: (parent.height - self.height) / 2;
+                y: (parent.height - self.height) / 2 - 1px;
                 image-fit: contain;
                 opacity: root.enabled ? 1 : 0.45;
             }
         }
         button-label-slot := Rectangle {
+            x: root.show-icon ? 26px : 0px;
+            y: -2px;
             width: button-label.preferred-width;
             height: root.height;
             horizontal-stretch: 0;
@@ -118,6 +129,148 @@ component SoftButton inherits Rectangle {
                 return accept;
             }
             return reject;
+        }
+    }
+}
+
+component TaskFileTable inherits Rectangle {
+    in property <[TaskFileRow]> rows;
+    in-out property <length> path-column-width: 360px;
+    in-out property <length> viewport-y <=> body.content-y;
+    callback sort-files(int, bool);
+    callback show-error(string);
+    property <[string]> headers: [
+        "Full path", "Status", "Started", "Completed", "Conversion",
+        "Original size", "New size", "Original FPS", "New FPS", "Codec", "Duration",
+    ];
+    property <int> current-sort-column: 0;
+    property <bool> sort-is-ascending: true;
+
+    pure function column-width(index: int) -> length {
+        if (index == 0) { return root.path-column-width; }
+        if (index == 1) { return 90px; }
+        if (index == 2 || index == 3) { return 130px; }
+        if (index == 4) { return 100px; }
+        if (index == 5) { return 104px; }
+        if (index == 6) { return 96px; }
+        if (index == 7) { return 100px; }
+        if (index == 8) { return 90px; }
+        if (index == 9) { return 100px; }
+        return 100px;
+    }
+
+    function request-sort(index: int) {
+        if (root.current-sort-column == index) {
+            root.sort-is-ascending = !root.sort-is-ascending;
+        } else {
+            root.current-sort-column = index;
+            root.sort-is-ascending = true;
+        }
+        root.sort-files(index, root.sort-is-ascending);
+    }
+
+    accessible-role: table;
+    accessible-label: "File conversion details";
+
+    VerticalLayout {
+        spacing: 0px;
+        header-clip := Rectangle {
+            height: 42px;
+            vertical-stretch: 0;
+            clip: true;
+            header-row := HorizontalLayout {
+                x: body.content-x;
+                width: self.preferred-width;
+                spacing: 0px;
+                for header[index] in root.headers: Rectangle {
+                    min-width: root.column-width(index);
+                    max-width: root.column-width(index);
+                    background: #19191e;
+                    border-width: 0px;
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: header + (root.current-sort-column == index
+                            ? (root.sort-is-ascending ? "  ↑" : "  ↓") : "");
+                        color: #aaaab4;
+                        font-size: 12px;
+                        font-weight: 600;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        x: parent.width - 1px;
+                        width: 1px;
+                        height: parent.height;
+                        background: #303038;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.request-sort(index); }
+                    }
+                }
+                Rectangle {
+                    min-width: 132px;
+                    max-width: 132px;
+                    background: #19191e;
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: "Error";
+                        color: #aaaab4;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: #35353d;
+            }
+        }
+        body := ListView {
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-on;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-on;
+            accessible-label: "Files in selected task";
+            for row[index] in root.rows: Rectangle {
+                min-width: row-layout.min-width;
+                height: 38px;
+                background: mod(index, 2) == 0 ? #202026 : transparent;
+                row-layout := HorizontalLayout {
+                    spacing: 0px;
+                    for value[column] in row.values: Rectangle {
+                        min-width: root.column-width(column);
+                        max-width: root.column-width(column);
+                        Text {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            text: value;
+                            color: column == 1 && value == "Failed" ? #ffbd69 : #d0d0d6;
+                            font-size: 12px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        min-width: 132px;
+                        max-width: 132px;
+                        background: transparent;
+                        if row.has-error: SoftButton {
+                            x: 9px;
+                            y: 4px;
+                            width: parent.width - 18px;
+                            min-width: 0px;
+                            height: 30px;
+                            text: "Show error";
+                            accessible-name: "Show error for " + row.values[0];
+                            clicked => { root.show-error(row.error-detail); }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -509,12 +662,12 @@ component TaskCard inherits Rectangle {
     in property <bool> dragging: false;
     in property <bool> drop-target: false;
     callback selected(int);
+    callback opened(int);
     callback retry(int);
     callback drag-started(int);
     callback drag-hovered(int);
     callback drag-finished(int, int);
     callback drag-cancelled;
-    callback copy-error(string);
     property <bool> drag-active: false;
     property <bool> was-dragged: false;
     property <int> drag-target-index: root.item-index;
@@ -722,13 +875,6 @@ component TaskCard inherits Rectangle {
                 min-width: 106px;
                 clicked => { root.retry(item-index); }
             }
-            if task.has-error: SoftButton {
-                text: "Copy error";
-                accessible-name: "Copy task error";
-                height: 30px;
-                min-width: 106px;
-                clicked => { root.copy-error(task.error-detail); }
-            }
         }
     }
 
@@ -736,6 +882,7 @@ component TaskCard inherits Rectangle {
         width: root.width - 156px;
         mouse-cursor: pointer;
         clicked => { if (!root.was-dragged) { root.selected(item-index); } }
+        double-clicked => { if (!root.was-dragged) { root.opened(item-index); } }
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down) {
                 root.was-dragged = false;
@@ -860,7 +1007,7 @@ component HistoryCard inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "VideoFerry";
+    title: "VideoFerry v" + root.app-version;
     icon: @image-url("../assets/app-icon.png");
     preferred-width: 1180px;
     preferred-height: 760px;
@@ -873,23 +1020,7 @@ export component AppWindow inherits Window {
     in property <[TaskItem]> tasks;
     in property <string> selected-task-title;
     in property <string> selected-task-error-detail;
-    in property <[[StandardListViewItem]]> selected-task-path-rows;
-    in property <[[StandardListViewItem]]> selected-task-metric-rows;
-    in-out property <[TableColumn]> task-file-path-column: [
-        { title: "Full path", min-width: 180px, horizontal-stretch: 1, sort-order: SortOrder.ascending },
-    ];
-    in-out property <[TableColumn]> task-file-metric-columns: [
-        { title: "Status", min-width: 72px, width: 82px },
-        { title: "Started", min-width: 96px, width: 126px },
-        { title: "Completed", min-width: 96px, width: 126px },
-        { title: "Conversion", min-width: 78px, width: 96px },
-        { title: "Original size", min-width: 78px, width: 94px },
-        { title: "New size", min-width: 72px, width: 88px },
-        { title: "Original FPS", min-width: 72px, width: 88px },
-        { title: "New FPS", min-width: 66px, width: 78px },
-        { title: "Codec", min-width: 72px, width: 92px },
-        { title: "Duration", min-width: 86px, horizontal-stretch: 1 },
-    ];
+    in property <[TaskFileRow]> selected-task-file-rows;
     in property <[HistoryItem]> history;
     in property <string> app-version;
     in property <[string]> mode-labels;
@@ -968,6 +1099,7 @@ export component AppWindow inherits Window {
     in-out property <int> selected-index: -1;
     in-out property <bool> task-details-open: false;
     in-out property <bool> conversion-error-open: false;
+    in-out property <string> conversion-error-detail: "";
     in-out property <int> page: 0;
     in-out property <bool> settings-open: false;
     in-out property <bool> task-builder-open: false;
@@ -1075,14 +1207,6 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 0;
                     background: #303037;
                 }
-                Text {
-                    text: "v" + root.app-version;
-                    color: #777781;
-                    font-size: 11px;
-                    font-weight: 600;
-                    horizontal-stretch: 0;
-                    vertical-alignment: center;
-                }
                 NavButton {
                     text: "My queue";
                     accessible-name: "Conversion queue";
@@ -1131,15 +1255,28 @@ export component AppWindow inherits Window {
 
         content := Rectangle {
             vertical-stretch: 1;
+            property <length> list-area-height: max(0px, self.height - (root.is-running
+                ? root.live-panel-height + (root.preview-enabled ? 220px : 22px)
+                : 0px));
             background: @linear-gradient(155deg, #251217 0%, #111115 38%, #0d0d10 100%);
             accessible-role: main;
 
-            if root.page == 0: VerticalLayout {
+            if root.page == 0: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: content.list-area-height;
+                clip: true;
+
+                VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
                 padding-left: 34px;
                 padding-right: 34px;
                 padding-top: 26px;
-                padding-bottom: !root.is-running ? 28px
-                    : root.live-panel-height + (root.preview-enabled ? 220px : 22px);
+                padding-bottom: 28px;
                 spacing: 20px;
 
                 if root.completion-notice != "": Rectangle {
@@ -1258,6 +1395,8 @@ export component AppWindow inherits Window {
                 }
 
                 if root.tasks.length > 0: VerticalLayout {
+                    min-height: 0px;
+                    vertical-stretch: 1;
                     spacing: 16px;
                     HorizontalLayout {
                         height: 44px;
@@ -1282,6 +1421,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle {
+                        min-height: 0px;
+                        vertical-stretch: 1;
                         clip: true;
                         ListView {
                             width: parent.width;
@@ -1302,11 +1443,14 @@ export component AppWindow inherits Window {
                                     drop-target: root.drag-target-index == index;
                                     selected(index) => {
                                         root.selected-index = index;
-                                        root.task-details-open = true;
                                         root.select-task(index);
                                     }
+                                    opened(index) => {
+                                        root.selected-index = index;
+                                        root.select-task(index);
+                                        root.task-details-open = true;
+                                    }
                                     retry(index) => { root.selected-index = index; root.retry-task(index); }
-                                    copy-error(error) => { root.copy-text(error); }
                                     drag-started(index) => {
                                         root.drag-task-index = index;
                                         root.drag-target-index = index;
@@ -1327,6 +1471,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+
             }
 
             if root.page == 0 && root.task-details-open && root.selected-index >= 0: task-details-panel := Rectangle {
@@ -1358,20 +1504,12 @@ export component AppWindow inherits Window {
                         }
                         Text {
                             width: 76px;
-                            text: root.selected-task-path-rows.length + (root.selected-task-path-rows.length == 1 ? " file" : " files");
+                            text: root.selected-task-file-rows.length + (root.selected-task-file-rows.length == 1 ? " file" : " files");
                             color: #85858f;
                             font-size: 12px;
                             horizontal-alignment: right;
                             vertical-alignment: center;
                             horizontal-stretch: 0;
-                        }
-                        SoftButton {
-                            text: "Show error";
-                            accessible-name: "Show conversion error";
-                            width: 112px;
-                            height: 32px;
-                            enabled: root.selected-task-error-detail != "";
-                            clicked => { root.conversion-error-open = true; }
                         }
                         SoftButton {
                             text: "Close";
@@ -1381,74 +1519,42 @@ export component AppWindow inherits Window {
                             clicked => { root.task-details-open = false; }
                         }
                     }
-                    HorizontalLayout {
-                        spacing: 0px;
-                        path-table := StandardTableView {
-                            width: root.task-file-path-width;
-                            horizontal-stretch: 0;
-                            rows: root.selected-task-path-rows;
-                            columns <=> root.task-file-path-column;
-                            current-row: -1;
-                            viewport-y <=> root.task-file-scroll-y;
-                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-                            accessible-label: "File paths";
-                            sort-ascending(column) => {
-                                if (metric-table.current-sort-column >= 0) {
-                                    root.task-file-metric-columns[metric-table.current-sort-column].sort-order = SortOrder.unsorted;
-                                }
-                                root.sort-task-files(0, true);
-                            }
-                            sort-descending(column) => {
-                                if (metric-table.current-sort-column >= 0) {
-                                    root.task-file-metric-columns[metric-table.current-sort-column].sort-order = SortOrder.unsorted;
-                                }
-                                root.sort-task-files(0, false);
-                            }
-                        }
-                        path-divider := Rectangle {
-                            width: 8px;
-                            horizontal-stretch: 0;
-                            background: path-resize.has-hover || path-resize.pressed ? #e50914 : #35353d;
-                            path-resize := TouchArea {
-                                mouse-cursor: ew-resize;
-                                moved => {
-                                    if (self.pressed) {
-                                        root.task-file-path-width = max(220px, min(560px,
-                                            root.task-file-path-width + self.mouse-x - self.pressed-x));
-                                    }
-                                }
-                            }
-                        }
-                        metric-table := StandardTableView {
-                            rows: root.selected-task-metric-rows;
-                            columns <=> root.task-file-metric-columns;
-                            current-row: -1;
-                            viewport-y <=> root.task-file-scroll-y;
-                            horizontal-scrollbar-policy: ScrollBarPolicy.always-on;
-                            accessible-label: "File conversion details";
-                            sort-ascending(column) => {
-                                root.task-file-path-column[0].sort-order = SortOrder.unsorted;
-                                root.sort-task-files(column + 1, true);
-                            }
-                            sort-descending(column) => {
-                                root.task-file-path-column[0].sort-order = SortOrder.unsorted;
-                                root.sort-task-files(column + 1, false);
-                            }
+                    TaskFileTable {
+                        rows: root.selected-task-file-rows;
+                        path-column-width <=> root.task-file-path-width;
+                        viewport-y <=> root.task-file-scroll-y;
+                        sort-files(column, ascending) => { root.sort-task-files(column, ascending); }
+                        show-error(detail) => {
+                            root.conversion-error-detail = detail;
+                            root.conversion-error-open = true;
                         }
                     }
                 }
             }
 
-            if root.page == 1: VerticalLayout {
+            if root.page == 1: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: content.list-area-height;
+                clip: true;
+
+                VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
                 padding: 34px;
                 spacing: 18px;
                 HorizontalLayout {
                     height: 48px;
                     vertical-stretch: 0;
+                    spacing: 16px;
                     Text { text: "Finished"; color: #ffffff; font-size: 27px; font-weight: 750; vertical-alignment: center; }
                     LineEdit {
                         width: 280px;
+                        height: 40px;
+                        vertical-stretch: 0;
                         horizontal-stretch: 0;
                         accessible-label: "Search finished conversions";
                         placeholder-text: "Search filename or path";
@@ -1460,6 +1566,8 @@ export component AppWindow inherits Window {
                     }
                     SoftButton {
                         text: "Clear history";
+                        height: 40px;
+                        vertical-stretch: 0;
                         min-width: 132px;
                         max-width: 132px;
                         enabled: root.history-total-count > 0;
@@ -1489,6 +1597,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.history.length > 0: ListView {
+                    min-height: 0px;
+                    vertical-stretch: 1;
                     accessible-role: list;
                     accessible-label: "Finished conversions";
                     for item in root.history: Rectangle {
@@ -1503,6 +1613,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+
             }
 
             if root.is-running: now-playing := Rectangle {
@@ -2521,7 +2633,7 @@ export component AppWindow inherits Window {
                     vertical-stretch: 0;
                 }
                 Text {
-                    text: "VideoFerry did not record a completed conversion. The full error is shown below.";
+                    text: "This file could not be converted. The recorded error is shown below.";
                     color: #aaaab4;
                     font-size: 13px;
                     wrap: word-wrap;
@@ -2539,7 +2651,7 @@ export component AppWindow inherits Window {
                         height: parent.height - 24px;
                         Text {
                             width: parent.width - 12px;
-                            text: root.selected-task-error-detail;
+                            text: root.conversion-error-detail;
                             color: #e4e4e8;
                             font-size: 12px;
                             wrap: word-wrap;
@@ -2554,7 +2666,7 @@ export component AppWindow inherits Window {
                     SoftButton {
                         text: "Copy error";
                         accessible-name: "Copy conversion error";
-                        clicked => { root.copy-text(root.selected-task-error-detail); }
+                        clicked => { root.copy-text(root.conversion-error-detail); }
                     }
                     SoftButton {
                         text: "Close";

@@ -13,9 +13,9 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
 fi
 
-ffmpeg_version="9.0.1"
+ffmpeg_version="9.0.2"
 source_url="https://ffmpeg.org/releases/ffmpeg-$ffmpeg_version.tar.xz"
-source_sha256="cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+source_sha256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
 build_root="${VIDEOFERRY_FFMPEG_BUILD_ROOT:-$workspace_root/.local/ffmpeg/macos-aarch64-build}"
 ffmpeg_dir="${FFMPEG_DIR:-$workspace_root/.local/ffmpeg/macos-aarch64}"
 allowed_root="$workspace_root/.local/ffmpeg"

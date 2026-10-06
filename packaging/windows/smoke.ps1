@@ -379,9 +379,9 @@ try {
     for ($attempt = 0; $attempt -lt 40 -and $null -eq $engineLine; $attempt++) {
         Start-Sleep -Milliseconds 250
         $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-        $engineLine = Find-AccessibleElementWithPrefix $elements 'FFmpeg 9.0.1' 'ControlType.Text'
+        $engineLine = Find-AccessibleElementWithPrefix $elements 'FFmpeg 9.0.2' 'ControlType.Text'
     }
-    Assert-Condition ($null -ne $engineLine) 'About view did not report the pinned FFmpeg 9.0.1 runtime'
+    Assert-Condition ($null -ne $engineLine) 'About view did not report the pinned FFmpeg 9.0.2 runtime'
     Assert-Condition ($engineLine.Current.Name -like '*GPL*') 'About view did not report the active FFmpeg license'
     Assert-Condition ($null -ne (Find-AccessibleElement $elements "Application version $appVersion" 'ControlType.Text')) 'About view did not report the application version'
     Assert-Condition ($null -ne (Find-AccessibleElement $elements 'Rust language level 1.98 (toolchain pinned to 1.98.0)' 'ControlType.Text')) 'About view did not report the pinned Rust toolchain'

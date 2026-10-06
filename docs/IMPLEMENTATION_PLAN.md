@@ -70,7 +70,7 @@ They exchange typed commands and events.
 
 ## Current delivery status
 
-The default executable now uses Slint 1.17.1 for a consumer-style queue,
+The default executable now uses Slint 1.18.1 for a consumer-style queue,
 history, active-conversion bar, and scrollable settings drawer. It exposes all
 six workflow setting groups, embeds Noto Sans CJK SC, and provides native
 AccessKit names, invoke/toggle/range patterns, keyboard focus, and visible focus
@@ -94,7 +94,7 @@ release bundle is promoted.
 | 8. Packaging and upgrades | Windows has a manifest-driven, SHA-256-enforcing SDK installer/verifier plus a static Rust CRT/minimal six-DLL PE dependency gate, portable bundle, exact in-process packaged-runtime gate, isolated no-SDK launch, native UI Automation, packaged failure/success queue lifecycles, forced-interruption/restart recovery, explicit local Inno compiler selection, real per-user installer build, optional app/installer Authenticode signing with post-signature validation, and a separate-GUID/no-shortcut install-upgrade-runtime-uninstall lifecycle. The macOS source recipe and bundle builder are syntax/compile-verified; the latter now requires build/license records and audits the bundle, extracted ZIP, and mounted DMG for arm64 architecture, plist metadata, signatures, dylib closure, forbidden executables, resources, and exact in-process runtime health. | Execute Windows signing with the release certificate and a genuinely clean-machine lifecycle plus native execution of the macOS verifier, VideoToolbox fixtures, signing/notarization, and clean-machine tests. |
 | 9. Parity and release gate | In progress | On this RTX 5080, the generated Windows corpus passes twenty-seven workflow/encoder gates: twenty-four Python/Rust output matches plus three verified Rust repairs for Python's broken Camera x264/SVT-AV1 commands and its `hev1` NVENC Camera output. Twelve gates exercise H.264/HEVC/AV1 NVENC across TV, Camera, Slideshow, and Stabilize. Every successful workflow asserts engine-resolved FPS/total-frame progress, with a separate real 24/12-FPS shared-folder gate proving the shared-lowest result; every stabilization gate also proves that phase-aware overall progress crosses 50% while second-pass media time restarts locally. Coverage also includes valid/sparse/malformed subtitles, chapters, VFR/HDR, multi-audio/collage and 41-photo chunked slideshows, exact text/TrueType/OpenType/binary attachment payload preservation, deterministic garbage/truncated/locked inputs, and test-only mid-mux storage exhaustion with clean partial-output handling. Run private/full media, real-world attachment variants, physical disk-full, and macOS matrices. |
 
-Rust is pinned to stable 1.98.0. FFmpeg is pinned to 9.0.1 for packaged native
+Rust is pinned to stable 1.98.0. FFmpeg is pinned to 9.0.2 for packaged native
 libraries and the Rust binding is pinned to the matching 9.0 series. These pins
 move only through the upgrade and release checks below.
 

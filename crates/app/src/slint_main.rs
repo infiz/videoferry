@@ -8,10 +8,9 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use slint::language::StandardListViewItem;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
 use slint::{
-    CloseRequestResponse, ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer,
+    CloseRequestResponse, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer,
     SharedString, Timer, TimerMode, VecModel,
 };
 use videoferry_app::legacy::{
@@ -46,7 +45,7 @@ fn main() -> Result<(), slint::PlatformError> {
     wire_callbacks(&ui, &controller, &task_file_sort);
     wire_native_file_drop(&ui, &controller);
     let initial_snapshot = controller.borrow().snapshot();
-    refresh(&ui, &initial_snapshot, *task_file_sort.borrow());
+    refresh(&ui, &initial_snapshot, None, *task_file_sort.borrow());
 
     let timer = Timer::default();
     let weak_ui = ui.as_weak();
@@ -92,7 +91,15 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if snapshot != *timer_snapshot.borrow() {
-            refresh(&ui, &snapshot, *timer_task_file_sort.borrow());
+            {
+                let displayed = timer_snapshot.borrow();
+                refresh(
+                    &ui,
+                    &snapshot,
+                    Some(&displayed),
+                    *timer_task_file_sort.borrow(),
+                );
+            }
             *timer_snapshot.borrow_mut() = snapshot;
         }
     });
@@ -541,35 +548,38 @@ fn task_item(task: &SlintTaskSnapshot) -> TaskItem {
     }
 }
 
-fn task_file_path_row(file: &SlintTaskFileSnapshot) -> ModelRc<StandardListViewItem> {
-    model(vec![StandardListViewItem::from(file.path.as_str())])
-}
-
-fn task_file_metric_row(file: &SlintTaskFileSnapshot) -> ModelRc<StandardListViewItem> {
-    model(vec![
-        StandardListViewItem::from(file.status.as_str()),
-        StandardListViewItem::from(file.started_time.as_str()),
-        StandardListViewItem::from(file.completed_time.as_str()),
-        StandardListViewItem::from(file.conversion_time.as_str()),
-        StandardListViewItem::from(file.original_size.as_str()),
-        StandardListViewItem::from(file.new_size.as_str()),
-        StandardListViewItem::from(file.original_fps.as_str()),
-        StandardListViewItem::from(file.new_fps.as_str()),
-        StandardListViewItem::from(file.codec.as_str()),
-        StandardListViewItem::from(file.duration.as_str()),
-    ])
-}
-
-fn task_file_table_rows(
-    files: &[SlintTaskFileSnapshot],
-) -> (
-    Vec<ModelRc<StandardListViewItem>>,
-    Vec<ModelRc<StandardListViewItem>>,
-) {
-    (
-        files.iter().map(task_file_path_row).collect(),
-        files.iter().map(task_file_metric_row).collect(),
-    )
+fn task_file_row(file: &SlintTaskFileSnapshot) -> TaskFileRow {
+    let detail = if file.error_detail.is_empty() && file.status == "Failed" {
+        format!(
+            "{}\nNo detailed conversion error was recorded for this file.",
+            file.path
+        )
+    } else if file.error_detail.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n{}", file.path, file.error_detail)
+    };
+    TaskFileRow {
+        values: model(
+            [
+                &file.path,
+                &file.status,
+                &file.started_time,
+                &file.completed_time,
+                &file.conversion_time,
+                &file.original_size,
+                &file.new_size,
+                &file.original_fps,
+                &file.new_fps,
+                &file.codec,
+                &file.duration,
+            ]
+            .map(SharedString::from)
+            .to_vec(),
+        ),
+        has_error: !detail.is_empty(),
+        error_detail: SharedString::from(detail),
+    }
 }
 
 fn task_file_number(value: &str) -> Option<f64> {
@@ -661,9 +671,8 @@ fn sorted_task_files(
 
 fn refresh_task_file_rows(ui: &AppWindow, files: &[SlintTaskFileSnapshot], sort: TaskFileSort) {
     let files = sorted_task_files(files, sort);
-    let (path_rows, metric_rows) = task_file_table_rows(&files);
-    ui.set_selected_task_path_rows(model(path_rows));
-    ui.set_selected_task_metric_rows(model(metric_rows));
+    let rows = files.iter().map(task_file_row).collect::<Vec<_>>();
+    ui.set_selected_task_file_rows(model(rows));
 }
 
 fn refresh_settings(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
@@ -706,26 +715,39 @@ fn refresh_settings(ui: &AppWindow, snapshot: &SlintAppSnapshot) {
     ui.set_settings_refreshing(false);
 }
 
-fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFileSort) {
-    let tasks = snapshot.tasks.iter().map(task_item).collect::<Vec<_>>();
-    let history = snapshot
-        .history
-        .iter()
-        .map(|item| HistoryItem {
-            title: SharedString::from(&item.title),
-            path: SharedString::from(&item.path),
-            subtitle: SharedString::from(&item.subtitle),
-            detail: SharedString::from(&item.detail),
-            configuration: SharedString::from(&item.configuration),
-        })
-        .collect::<Vec<_>>();
-
-    ui.set_tasks(model(tasks));
+fn refresh(
+    ui: &AppWindow,
+    snapshot: &SlintAppSnapshot,
+    previous: Option<&SlintAppSnapshot>,
+    task_file_sort: TaskFileSort,
+) {
+    if previous.is_none_or(|previous| previous.tasks != snapshot.tasks) {
+        let tasks = snapshot.tasks.iter().map(task_item).collect::<Vec<_>>();
+        ui.set_tasks(update_model(ui.get_tasks(), tasks));
+    }
     ui.set_selected_task_title(SharedString::from(&snapshot.selected_task_title));
     ui.set_selected_task_error_detail(SharedString::from(&snapshot.selected_task_error_detail));
-    refresh_task_file_rows(ui, &snapshot.selected_task_files, task_file_sort);
-    ui.set_history(model(history));
-    refresh_settings(ui, snapshot);
+    if previous.is_none_or(|previous| previous.selected_task_files != snapshot.selected_task_files)
+    {
+        refresh_task_file_rows(ui, &snapshot.selected_task_files, task_file_sort);
+    }
+    if previous.is_none_or(|previous| previous.history != snapshot.history) {
+        let history = snapshot
+            .history
+            .iter()
+            .map(|item| HistoryItem {
+                title: SharedString::from(&item.title),
+                path: SharedString::from(&item.path),
+                subtitle: SharedString::from(&item.subtitle),
+                detail: SharedString::from(&item.detail),
+                configuration: SharedString::from(&item.configuration),
+            })
+            .collect::<Vec<_>>();
+        ui.set_history(model(history));
+    }
+    if previous.is_none_or(|previous| previous.settings != snapshot.settings) {
+        refresh_settings(ui, snapshot);
+    }
     ui.set_activity(SharedString::from(&snapshot.activity));
     ui.set_engine_status(SharedString::from(&snapshot.engine_status));
     ui.set_active_title(SharedString::from(&snapshot.active_title));
@@ -775,7 +797,9 @@ fn refresh(ui: &AppWindow, snapshot: &SlintAppSnapshot, task_file_sort: TaskFile
     ui.set_pause_after_scheduled(snapshot.pause_after_current);
     ui.set_completion_notice(SharedString::from(&snapshot.completion_notice));
     ui.set_selected_index(snapshot.selected_index);
-    ui.set_task_draft_targets(model(strings(&snapshot.task_draft_targets)));
+    if previous.is_none_or(|previous| previous.task_draft_targets != snapshot.task_draft_targets) {
+        ui.set_task_draft_targets(model(strings(&snapshot.task_draft_targets)));
+    }
     ui.set_task_draft_summary(SharedString::from(&snapshot.task_draft_summary));
     ui.set_task_draft_output_summary(SharedString::from(&snapshot.task_draft_output_summary));
 }
@@ -788,9 +812,41 @@ fn model<T: Clone + 'static>(values: Vec<T>) -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::from(values)))
 }
 
+fn update_model<T: Clone + PartialEq + 'static>(current: ModelRc<T>, values: Vec<T>) -> ModelRc<T> {
+    // Keep the card instances alive across selection and progress updates so
+    // their TouchAreas retain double-click and drag state.
+    if let Some(rows) = current.as_any().downcast_ref::<VecModel<T>>()
+        && rows.row_count() == values.len()
+    {
+        for (index, value) in values.into_iter().enumerate() {
+            if rows.row_data(index).as_ref() != Some(&value) {
+                rows.set_row_data(index, value);
+            }
+        }
+        return current;
+    }
+    model(values)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SlintTaskFileSnapshot, TaskFileSort, sorted_task_files};
+    use slint::Model;
+
+    use super::{SlintTaskFileSnapshot, TaskFileSort, sorted_task_files, task_file_row};
+
+    #[test]
+    fn task_updates_preserve_the_model_for_click_tracking() {
+        let original = super::model(vec![false, true]);
+        let updated = super::update_model(original.clone(), vec![true, false]);
+
+        assert!(std::ptr::eq(original.as_any(), updated.as_any()));
+        assert_eq!(updated.row_data(0), Some(true));
+        assert_eq!(updated.row_data(1), Some(false));
+
+        let resized = super::update_model(updated, vec![true]);
+        assert_eq!(resized.row_count(), 1);
+        assert_eq!(resized.row_data(0), Some(true));
+    }
 
     fn task_file(path: &str, size: &str, duration: &str) -> SlintTaskFileSnapshot {
         SlintTaskFileSnapshot {
@@ -846,6 +902,30 @@ mod tests {
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>(),
             ["file-10.mp4", "file-20.mp4", "file-2.mp4"]
+        );
+    }
+
+    #[test]
+    fn failed_task_file_has_a_row_error_action() {
+        let mut file = task_file("episode.mkv", "-", "-");
+        file.status = "Failed".to_owned();
+        file.error_detail = "Invalid data found when processing input".to_owned();
+
+        let error = task_file_row(&file);
+
+        assert!(error.has_error);
+        assert_eq!(
+            error.error_detail.as_str(),
+            "episode.mkv\nInvalid data found when processing input"
+        );
+
+        file.error_detail.clear();
+        let fallback = task_file_row(&file);
+        assert!(fallback.has_error);
+        assert!(
+            fallback
+                .error_detail
+                .contains("No detailed conversion error")
         );
     }
 }

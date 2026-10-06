@@ -136,7 +136,7 @@ function Assert-InstalledVersion([string]$ExpectedMarker, [string]$ExpectedVersi
         $env:PATH = $originalPath
     }
     $runtimeReport = [IO.File]::ReadAllText($runtimeReportPath)
-    if ($runtimeReport -notmatch '(?m)^runtime=ok$' -or $runtimeReport -notmatch '(?m)^engine=FFmpeg 9\.0\.1.*GPL') {
+    if ($runtimeReport -notmatch '(?m)^runtime=ok$' -or $runtimeReport -notmatch '(?m)^engine=FFmpeg 9\.0\.2.*GPL') {
         throw "Installed direct runtime report is invalid: $runtimeReport"
     }
 }

@@ -42,12 +42,12 @@ const REQUIRED_FILTERS: &[&str] = &[
     "tpad",
     "xfade",
 ];
-const PINNED_FFMPEG_RELEASE: &str = "9.0.1";
+const PINNED_FFMPEG_RELEASE: &str = "9.0.2";
 const PINNED_LIBRARY_VERSIONS: &[(&str, u32, (u32, u32, u32))] = &[
-    ("libavformat", 63, (63, 1, 101)),
-    ("libavcodec", 63, (63, 1, 101)),
-    ("libavfilter", 12, (12, 1, 101)),
-    ("libavutil", 61, (61, 1, 101)),
+    ("libavformat", 63, (63, 1, 102)),
+    ("libavcodec", 63, (63, 1, 102)),
+    ("libavfilter", 12, (12, 1, 102)),
+    ("libavutil", 61, (61, 1, 102)),
 ];
 const REQUIRED_ENCODERS: &[&str] = &[
     "aac",

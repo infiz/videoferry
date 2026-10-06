@@ -80,7 +80,7 @@ function Invoke-WindowsCodeSign([string]$Path) {
 }
 
 if ([string]::IsNullOrWhiteSpace($FfmpegSdk)) {
-    $FfmpegSdk = Join-Path $workspaceRoot ".local\ffmpeg\ffmpeg-9.0.1-full_build-shared"
+    $FfmpegSdk = Join-Path $workspaceRoot ".local\ffmpeg\ffmpeg-9.0.2-full_build-shared"
 }
 $FfmpegSdk = (Resolve-Path -LiteralPath $FfmpegSdk).Path
 foreach ($required in @("include", "lib", "bin")) {
@@ -177,7 +177,7 @@ try {
     }
     foreach ($requiredPattern in @(
         '^runtime=ok$',
-        '^engine=FFmpeg 9\.0\.1.*libavformat 63\.1\.101.*libavcodec 63\.1\.101.*libavfilter 12\.1\.101.*libavutil 61\.1\.101.*GPL',
+        '^engine=FFmpeg 9\.0\.2.*libavformat 63\.1\.102.*libavcodec 63\.1\.102.*libavfilter 12\.1\.102.*libavutil 61\.1\.102.*GPL',
         '^required_encoders=aac,ac3,libsvtav1,libx264,libx265,mov_text,srt$',
         '^stabilization=',
         '^muxers=matroska,mp4$'

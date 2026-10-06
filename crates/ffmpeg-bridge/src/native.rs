@@ -1038,6 +1038,7 @@ fn hardware_encoder_probe(name: &str) -> bool {
     encoder.set_width(WIDTH);
     encoder.set_height(HEIGHT);
     encoder.set_format(ffmpeg::format::Pixel::YUV420P);
+    encoder.set_color_range(ffmpeg::color::Range::MPEG);
     encoder.set_time_base(ffmpeg::Rational(1, 30));
     encoder.set_frame_rate(Some(ffmpeg::Rational(30, 1)));
     encoder.set_bit_rate(1_000_000);

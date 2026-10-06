@@ -212,6 +212,7 @@ pub(super) fn write(
     encoder.set_width(width);
     encoder.set_height(height);
     encoder.set_format(ffmpeg::format::Pixel::YUV420P);
+    encoder.set_color_range(ffmpeg::color::Range::MPEG);
     encoder.set_time_base(encoder_time_base);
     encoder.set_frame_rate(Some(ffmpeg::Rational(
         i32::try_from(fps).map_err(integer_failure)?,

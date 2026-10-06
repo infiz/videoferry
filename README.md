@@ -35,8 +35,18 @@ testing/                 Cross-platform runtime and parity checks
 
 ## Development
 
-The repository pins Rust 1.98.0. Basic workspace tests do not require a local
-FFmpeg SDK:
+The repository pins Rust 1.98.0. Install [rustup](https://rustup.rs), then install
+the pinned toolchain:
+
+```bash
+rustup toolchain install 1.98.0 --profile default --component clippy --component rustfmt
+```
+
+For development commands, put `$HOME/.cargo/bin` before Homebrew on `PATH` so
+rustup honors `rust-toolchain.toml`. The macOS package builder selects the pinned
+toolchain through rustup explicitly, even when Homebrew Rust is first on `PATH`.
+
+Basic workspace tests do not require a local FFmpeg SDK:
 
 ```text
 cargo test --workspace --locked

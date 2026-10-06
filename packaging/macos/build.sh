@@ -19,9 +19,32 @@ if [[ "$(uname -m)" != "arm64" ]]; then
 fi
 
 expected_rust_version="$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{print $2; exit}' "$workspace_root/rust-toolchain.toml")"
-actual_rust_version="$(rustc --version)"
-if [[ -z "$expected_rust_version" || "$actual_rust_version" != "rustc $expected_rust_version "* ]]; then
+if [[ -z "$expected_rust_version" ]]; then
+    echo "Unable to read the pinned Rust toolchain from rust-toolchain.toml." >&2
+    exit 1
+fi
+
+# Homebrew Rust does not honor rust-toolchain.toml. Select both Cargo and rustc
+# through rustup explicitly, even when Homebrew comes first on PATH.
+rustup_command="$(command -v rustup || true)"
+if [[ -z "$rustup_command" && -x "${CARGO_HOME:-$HOME/.cargo}/bin/rustup" ]]; then
+    rustup_command="${CARGO_HOME:-$HOME/.cargo}/bin/rustup"
+fi
+cargo_command=(cargo)
+if [[ -n "$rustup_command" ]]; then
+    if ! actual_rust_version="$("$rustup_command" run "$expected_rust_version" rustc --version)"; then
+        echo "Install the pinned Rust toolchain with:" >&2
+        echo "  \"$rustup_command\" toolchain install $expected_rust_version --profile default --component clippy --component rustfmt" >&2
+        exit 1
+    fi
+    cargo_command=("$rustup_command" run "$expected_rust_version" cargo)
+else
+    actual_rust_version="$(rustc --version)"
+fi
+if [[ "$actual_rust_version" != "rustc $expected_rust_version "* ]]; then
     echo "Release builds require rustc $expected_rust_version exactly; active compiler is '$actual_rust_version'." >&2
+    echo "Install rustup from https://rustup.rs, then run:" >&2
+    echo "  rustup toolchain install $expected_rust_version --profile default --component clippy --component rustfmt" >&2
     exit 1
 fi
 
@@ -71,7 +94,7 @@ export FFMPEG_DIR="$ffmpeg_dir"
 export LIBCLANG_PATH="$libclang_path"
 
 cd "$workspace_root"
-cargo build --locked --release -p videoferry-app --features native-ffmpeg
+"${cargo_command[@]}" build --locked --release -p videoferry-app --features native-ffmpeg
 
 dist_root="$workspace_root/dist/macos"
 app_bundle="$dist_root/VideoFerry.app"
@@ -153,6 +176,15 @@ while IFS= read -r binary; do
 done < "$dependency_queue"
 rm -f "$dependency_queue"
 
+remove_existing_signature() {
+    local binary="$1"
+    # Only modify bundle copies. Fresh signatures are applied after all dylib
+    # paths have been rewritten, so inherited signatures are no longer useful.
+    if codesign --display "$binary" >/dev/null 2>&1; then
+        codesign --remove-signature "$binary"
+    fi
+}
+
 rewrite_dependencies() {
     local binary="$1"
     while IFS= read -r dependency; do
@@ -165,11 +197,13 @@ rewrite_dependencies() {
 }
 
 while IFS= read -r library; do
+    remove_existing_signature "$library"
     install_name_tool -id "@rpath/$(basename "$library")" "$library"
     rewrite_dependencies "$library"
 done < <(find "$frameworks" -maxdepth 1 -type f -name '*.dylib' -print)
 
 app_binary="$macos/VideoFerry"
+remove_existing_signature "$app_binary"
 rewrite_dependencies "$app_binary"
 if ! otool -l "$app_binary" | grep -q '@executable_path/../Frameworks'; then
     install_name_tool -add_rpath '@executable_path/../Frameworks' "$app_binary"
